@@ -1,4 +1,12 @@
+# Конфигурация и секреты
+.env
+credentials.json
+
+# Файлы Bundler/RVM/Системные
 /.bundle/
+/vendor/bundle/
+.ruby-version
+.ruby-gemset
 /.yardoc
 /_yardoc/
 /coverage/
@@ -9,3 +17,10 @@
 
 # rspec failure tracking
 .rspec_status
+
+# Кэш Zeitwerk (если используется)
+/tmp/zeitwerk*
+
+# Лог файлы (если будете добавлять)
+*.log
+

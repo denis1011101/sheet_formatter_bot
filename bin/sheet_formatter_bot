@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+# Этот скрипт предназначен для запуска через `bundle exec`
+
+# Загружаем основной файл гема, который настроит Zeitwerk
+require 'sheet_formatter_bot'
+
+# --- Запуск бота ---
+begin
+  # Создаем экземпляры классов из нашего модуля
+  formatter = SheetFormatterBot::SheetsFormatter.new
+  bot = SheetFormatterBot::TelegramBot.new(sheets_formatter: formatter)
+
+  # Запускаем основной цикл бота
+  bot.run
+
+rescue SheetFormatterBot::ConfigError => e
+  # Ошибка конфигурации (например, отсутствует .env или переменная)
+  $stderr.puts "[ОШИБКА ЗАПУСКА] Проблема с конфигурацией: #{e.message}"
+  $stderr.puts "Убедитесь, что файл .env существует в корне проекта и содержит все необходимые переменные (TELEGRAM_BOT_TOKEN, GOOGLE_SHEET_ID)."
+  $stderr.puts "Также проверьте наличие и доступность файла учетных данных Google (credentials.json)."
+  exit(1) # Выход с кодом ошибки
+
+rescue SheetFormatterBot::Error => e
+  # Другие ошибки инициализации или критические ошибки нашего гема
+  $stderr.puts "[ОШИБКА ЗАПУСКА] #{e.class}: #{e.message}"
+  # Можно добавить вывод backtrace для отладки: $stderr.puts e.backtrace
+  exit(1)
+
+rescue Interrupt
+  # Обработка Ctrl+C для чистого завершения
+  puts "\nПолучен сигнал прерывания (Ctrl+C). Завершение работы..."
+  exit(0)
+
+rescue StandardError => e
+  # Перехват любых других неожиданных ошибок при запуске
+  $stderr.puts "[КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА] Неперехваченное исключение: #{e.class} - #{e.message}"
+  $stderr.puts e.backtrace.join("\n")
+  exit(1)
+end
+
