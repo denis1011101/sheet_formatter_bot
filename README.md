@@ -53,6 +53,7 @@ kill [PID]
 - `NOTIFICATION_HOURS_BEFORE` - за сколько часов отправлять уведомления (по умолчанию 8)
 - `TENNIS_DEFAULT_TIME` - время начала тенниса (по умолчанию "22:00")
 - `NOTIFICATION_CHECK_INTERVAL` - интервал проверки для уведомлений в секундах (по умолчанию 900)
+- `TIMEZONE` - часовой пояс для уведомлений (по умолчанию "Asia/Yekaterinburg")
 
 ### Учетные данные Google API
 
