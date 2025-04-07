@@ -9,9 +9,9 @@ module SheetFormatterBot
   class SheetsFormatter
     COLOR_MAP = {
       'red'    => { red: 1.0, green: 0.0, blue: 0.0 },
-      'green'  => { red: 0.0, green: 1.0, blue: 0.0 },
+      'green'  => { red: 0.0, green: 0.5, blue: 0.0 },
       'blue'   => { red: 0.0, green: 0.0, blue: 1.0 },
-      'yellow' => { red: 1.0, green: 1.0, blue: 0.0 },
+      'yellow' => { red: 1.0, green: 0.5, blue: 0.0 },
       'white'  => { red: 1.0, green: 1.0, blue: 1.0 },
       'none'   => nil
     }.transform_values { |v| v ? Google::Apis::SheetsV4::Color.new(**v) : nil }.freeze
@@ -23,7 +23,23 @@ module SheetFormatterBot
       @credentials_path = credentials_path
       @service = nil
       @sheet_ids_cache = {}
+      @spreadsheet_data_cache = { data: nil, expires_at: Time.now }
       validate_credentials_path
+    end
+
+    # Получить все данные таблицы
+    def get_spreadsheet_data(sheet_name = Config.default_sheet_name)
+      # Используем кэш, если данные не старше 5 минут
+      if @spreadsheet_data_cache[:data].nil? || Time.now > @spreadsheet_data_cache[:expires_at]
+        range = "#{sheet_name}!A1:Z100" # Берем большой диапазон, который охватывает все данные
+        response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
+        @spreadsheet_data_cache = {
+          data: response.values || [],
+          expires_at: Time.now + 300 # Кэш на 5 минут
+        }
+      end
+
+      @spreadsheet_data_cache[:data]
     end
 
     def apply_format(sheet_name, range_a1, format_type, value = nil)
@@ -35,6 +51,10 @@ module SheetFormatterBot
 
       authenticated_service.batch_update_spreadsheet(spreadsheet_id, batch_update_request)
       log(:info, "Форматирование применено: #{sheet_name}!#{range_a1} -> #{format_type} #{value}")
+
+      # Сбрасываем кэш после изменения
+      @spreadsheet_data_cache[:data] = nil
+
       true
     rescue Google::Apis::Error => e
       log(:error, "Google API Error: #{e.message} (Status: #{e.status_code}, Body: #{e.body})")
@@ -50,9 +70,9 @@ module SheetFormatterBot
     private
 
     def validate_credentials_path
-        unless File.exist?(credentials_path
-              raise ConfigError, "Файл учетных данных Google не найден по пути: #{credentials_path}")
-        end
+      unless File.exist?(credentials_path)
+        raise ConfigError, "Файл учетных данных Google не найден по пути: #{credentials_path}"
+      end
     end
 
     def authenticated_service
@@ -127,10 +147,20 @@ module SheetFormatterBot
         else
           raise InvalidFormatError, "Неизвестный цвет фона '#{value}'. Доступные: #{COLOR_MAP.keys.join(', ')}."
         end
+      when :text_color # Добавляем новый тип форматирования для цвета текста
+        color_key = value.to_s.downcase
+        if COLOR_MAP.key?(color_key)
+          cell_format.text_format = Google::Apis::SheetsV4::TextFormat.new(
+            foreground_color: COLOR_MAP[color_key]
+          )
+          fields_to_update = 'userEnteredFormat.textFormat.foregroundColor'
+        else
+          raise InvalidFormatError, "Неизвестный цвет текста '#{value}'. Доступные: #{COLOR_MAP.keys.join(', ')}."
+        end
       when :clear
-        fields_to_update = 'userEnteredFormat(textFormat.bold,textFormat.italic,backgroundColor)'
+        fields_to_update = 'userEnteredFormat(textFormat.bold,textFormat.italic,backgroundColor,textFormat.foregroundColor)'
       else
-        raise InvalidFormatError, "Неизвестный тип форматирования '#{format_type}'. Доступные: bold, italic, background, clear."
+        raise InvalidFormatError, "Неизвестный тип форматирования '#{format_type}'. Доступные: bold, italic, background, text_color, clear."
       end
 
       {
@@ -143,8 +173,7 @@ module SheetFormatterBot
     end
 
     def log(level, message)
-        puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] [#{level.upcase}] #{message}"
+      puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] [#{level.upcase}] #{message}"
     end
   end
 end
-

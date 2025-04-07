@@ -39,4 +39,3 @@ rescue StandardError => e
   $stderr.puts e.backtrace.join("\n")
   exit(1)
 end
-

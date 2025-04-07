@@ -2,6 +2,9 @@
 .env
 credentials.json
 
+# Данные пользователей и резервные копии
+data/
+
 # Файлы Bundler/RVM/Системные
 /.bundle/
 /vendor/bundle/

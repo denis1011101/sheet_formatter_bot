@@ -1,43 +1,63 @@
 # SheetFormatterBot
 
-TODO: Delete this and the text below, and describe your gem
+Телеграм-бот для работы с Google-таблицами теннисных игр. Позволяет форматировать ячейки и отправляет уведомления игрокам перед матчем.
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/sheet_formatter_bot`. To experiment with that code, run `bin/console` for an interactive prompt.
+## Возможности
 
-## Installation
+- Форматирование текста в Google-таблице (жирный, курсив, фон)
+- Регистрация пользователей через Telegram
+- Сопоставление имен в таблице с пользователями Telegram
+- Отправка уведомлений игрокам перед теннисом
+- Сбор ответов о посещении и изменение цвета ячейки в зависимости от ответа
 
-TODO: Replace `UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG` with your gem name right after releasing it to RubyGems.org. Please do not do it earlier due to security reasons. Alternatively, replace this section with instructions to install your gem from git if you don't plan to release to RubyGems.org.
+## Установка
 
-Install the gem and add to the application's Gemfile by executing:
+1. Клонируйте репозиторий
+2. Установите зависимости: `bundle install`
+3. Создайте файл `.env` на основе `.env.example` и заполните его
+4. Добавьте файл учетных данных Google API (`credentials.json`)
+5. Запустите бота: `bundle exec bin/sheet_formatter_bot`
 
-```bash
-bundle add UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
-```
+## Настройка
 
-If bundler is not being used to manage dependencies, install the gem by executing:
+### Переменные окружения
 
-```bash
-gem install UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
-```
+- `TELEGRAM_BOT_TOKEN` - токен Telegram бота от @BotFather
+- `GOOGLE_SHEET_ID` - ID Google-таблицы
+- `GOOGLE_CREDENTIALS_PATH` - путь к файлу учетных данных Google API
+- `DEFAULT_SHEET_NAME` - название листа (по умолчанию "Лист1")
+- `NOTIFICATION_HOURS_BEFORE` - за сколько часов отправлять уведомления (по умолчанию 8)
+- `TENNIS_DEFAULT_TIME` - время начала тенниса (по умолчанию "22:00")
+- `NOTIFICATION_CHECK_INTERVAL` - интервал проверки для уведомлений в секундах (по умолчанию 900)
 
-## Usage
+### Учетные данные Google API
 
-TODO: Write usage instructions here
+1. Создайте проект в [Google Cloud Console](https://console.cloud.google.com/)
+2. Включите Google Sheets API
+3. Создайте сервисный аккаунт
+4. Создайте ключ JSON для сервисного аккаунта
+5. Сохраните файл ключа как `credentials.json`
+6. Предоставьте доступ к таблице для email сервисного аккаунта
 
-## Development
+## Использование
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+### Команды бота
 
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+- `/start` - регистрация в боте и показ справки
+- `/format <Ячейка> <bold|italic|clear>` - стиль текста (пример: `/format A1 bold`)
+- `/format <Ячейка> background <цвет>` - цвет фона (пример: `/format B2 background green`)
+- `/map <Имя_в_таблице> <@username или ID>` - сопоставить имя в таблице с пользователем Telegram
+- `/myname <Имя_в_таблице>` - указать свое имя в таблице
+- `/mappings` - показать текущие сопоставления имен
 
-## Contributing
+### Уведомления
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/sheet_formatter_bot. This project is intended to be a safe, welcoming space for collaboration, and contributors are expected to adhere to the [code of conduct](https://github.com/[USERNAME]/sheet_formatter_bot/blob/master/CODE_OF_CONDUCT.md).
+Бот автоматически отправляет уведомление всем игрокам, указанным в таблице на текущую дату, за 8 часов до начала игры с кнопками для ответа:
+- ✅ Да
+- ❌ Нет
+- 🤔 Не уверен
 
-## License
-
-The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
-
-## Code of Conduct
-
-Everyone interacting in the SheetFormatterBot project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/[USERNAME]/sheet_formatter_bot/blob/master/CODE_OF_CONDUCT.md).
+В зависимости от ответа изменяется цвет имени в таблице:
+- "Да" -> зеленый
+- "Нет" -> красный
+- "Не уверен" -> желтый

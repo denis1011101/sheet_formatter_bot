@@ -6,7 +6,6 @@ module SheetFormatterBot
 
     def self.register(pattern, handler_method, description)
       COMMANDS << Command.new(pattern, handler_method, description)
-      # log(:debug, "Зарегистрирована команда: #{pattern} -> #{handler_method}") # Раскомментируйте для отладки
     end
 
     # Метод парсинга, вызываемый из TelegramBot
@@ -32,30 +31,51 @@ module SheetFormatterBot
       COMMANDS.map { |cmd| "`#{cmd.description}`" }.join("\n")
     end
 
-    # --- Регистрация команд ---
-    # Используем константу с цветами из SheetsFormatter
-    valid_colors = SheetsFormatter::COLOR_MAP.keys.join('|')
+    # Используем метапрограммирование для динамической регистрации команд
+    def self.define_commands
+      # Очистим текущие команды перед регистрацией новых
+      COMMANDS.clear
 
-    register(
-      /^\/start$/i,
-      :handle_start,
-      "/start - Показать приветствие и список команд"
-    )
-    register(
-      %r{^/format\s+([A-Z]+\d+)\s+(bold|italic|clear)$}i,
-      :handle_format_simple,
-      "/format <Ячейка> <bold|italic|clear> - Стиль текста (Пример: /format A1 bold)"
-    )
-    register(
-      %r{^/format\s+([A-Z]+\d+)\s+background\s+(#{valid_colors})$}i,
-      :handle_format_background,
-      "/format <Ячейка> background <цвет> - Цвет фона (Пример: /format B2 background green)"
-    )
+      # --- Основные команды ---
+      register(
+        /^\/start$/i,
+        :handle_start,
+        "/start - Регистрация в боте и показ справки"
+      )
 
-    # --- Вспомогательный метод логирования (можно вынести в отдельный модуль) ---
+      # --- Команды для управления сопоставлением имен ---
+      register(
+        /^\/map\s+(\S+)\s+(@\S+|\S+@\S+|\d+)$/i,
+        :handle_name_mapping,
+        "/map <Имя_в_таблице> <@username или ID> - Сопоставить имя в таблице с пользователем Telegram"
+      )
+
+      register(
+        /^\/myname\s+(.+)$/i,
+        :handle_set_sheet_name,
+        "/myname <Имя_в_таблице> - Указать свое имя в таблице"
+      )
+
+      register(
+        /^\/mappings$/i,
+        :handle_show_mappings,
+        "/mappings - Показать текущие сопоставления имен"
+      )
+
+      # --- Команда для тестирования уведомлений ---
+      register(
+        /^\/test$/i,
+        :handle_test_notification,
+        "/test - Отправить тестовое уведомление"
+      )
+    end
+
+    # Инициализируем команды сразу при загрузке модуля
+    define_commands
+
+    # --- Вспомогательный метод логирования ---
     def self.log(level, message)
-        puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] [#{level.upcase}] [CommandParser] #{message}"
+      puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] [#{level.upcase}] [CommandParser] #{message}"
     end
   end
 end
-

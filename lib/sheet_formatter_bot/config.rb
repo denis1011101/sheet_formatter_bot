@@ -20,6 +20,18 @@ module SheetFormatterBot
       ENV.fetch('DEFAULT_SHEET_NAME', 'Лист1')
     end
 
+    def notification_hours_before
+      ENV.fetch('NOTIFICATION_HOURS_BEFORE', '8').to_i
+    end
+
+    def tennis_default_time
+      ENV.fetch('TENNIS_DEFAULT_TIME', '22:00')
+    end
+
+    def notification_check_interval
+      ENV.fetch('NOTIFICATION_CHECK_INTERVAL', '900').to_i # 15 минут по умолчанию
+    end
+
     def google_scopes
       [Google::Apis::SheetsV4::AUTH_SPREADSHEETS]
     end
@@ -31,4 +43,3 @@ module SheetFormatterBot
     end
   end
 end
-
