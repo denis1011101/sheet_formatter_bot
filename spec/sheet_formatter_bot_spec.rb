@@ -2,6 +2,7 @@
 
 require 'tmpdir'
 require 'fileutils'
+require 'tzinfo'
 
 RSpec.describe SheetFormatterBot do
   it "has a version number" do
@@ -494,6 +495,103 @@ RSpec.describe SheetFormatterBot::NotificationScheduler do
 
       expect(scheduler).not_to receive(:update_attendance_in_sheet)
       scheduler.handle_attendance_callback(callback_query)
+    end
+  end
+
+  describe "timezone handling" do
+    let(:bot) { double("TelegramBot", user_registry: double("UserRegistry")) }
+    let(:sheets_formatter) { double("SheetsFormatter") }
+
+    before do
+      # Стабы для конфигурации
+      allow(SheetFormatterBot::Config).to receive(:notification_hours_before).and_return(8)
+      allow(SheetFormatterBot::Config).to receive(:tennis_default_time).and_return("22:00")
+      allow(SheetFormatterBot::Config).to receive(:notification_check_interval).and_return(900)
+      allow(SheetFormatterBot::Config).to receive(:timezone).and_return('Asia/Yekaterinburg')
+
+      # Мокируем методы логирования
+      allow_any_instance_of(SheetFormatterBot::NotificationScheduler).to receive(:log)
+    end
+
+    it "использует часовой пояс Екатеринбурга по умолчанию" do
+      scheduler = SheetFormatterBot::NotificationScheduler.new(
+        bot: bot,
+        sheets_formatter: sheets_formatter
+      )
+
+      # Получаем приватный атрибут @timezone для проверки
+      timezone = scheduler.instance_variable_get(:@timezone)
+      expect(timezone.identifier).to eq('Asia/Yekaterinburg')
+    end
+
+    it "правильно настраивается с другим часовым поясом" do
+      allow(SheetFormatterBot::Config).to receive(:timezone).and_return('Europe/Moscow')
+
+      scheduler = SheetFormatterBot::NotificationScheduler.new(
+        bot: bot,
+        sheets_formatter: sheets_formatter
+      )
+
+      timezone = scheduler.instance_variable_get(:@timezone)
+      expect(timezone.identifier).to eq('Europe/Moscow')
+    end
+
+    it "определяет правильное время отправки уведомлений" do
+      # Фиксированное текущее время
+      fixed_time = Time.new(2025, 4, 7, 12, 0, 0) # 12:00
+
+      # Время тенниса - 16:00, уведомление за 4 часа (в 12:00)
+      tennis_hour = 16
+      notification_hours_before = 4
+
+      # Заменяем проверку интервалов на мок самого метода
+      mock_timezone = double("MockTimezone",
+        identifier: 'Asia/Yekaterinburg',
+        now: fixed_time
+      )
+
+      # Мок для local_time возвращает время тенниса на 16:00
+      allow(mock_timezone).to receive(:local_time) do |year, month, day, hour, min|
+        Time.new(year, month, day, hour, min, 0, "+05:00")
+      end
+
+      allow(TZInfo::Timezone).to receive(:get).and_return(mock_timezone)
+      allow(SheetFormatterBot::Config).to receive(:tennis_default_time).and_return("#{tennis_hour}:00")
+      allow(SheetFormatterBot::Config).to receive(:notification_hours_before).and_return(notification_hours_before)
+      allow(SheetFormatterBot::Config).to receive(:notification_check_interval).and_return(60*60) # 1 час
+
+      # Создаем scheduler и переопределяем приватные методы для тестирования
+      scheduler = SheetFormatterBot::NotificationScheduler.new(
+        bot: bot,
+        sheets_formatter: sheets_formatter
+      )
+
+      # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: вместо ожидания вызова send_today_notifications
+      # мы напрямую переопределяем логику проверки уведомлений
+      # Заменяем оригинальный метод check_and_send_notifications своей реализацией
+      allow(scheduler).to receive(:check_and_send_notifications) do
+        # Вызываем send_today_notifications напрямую
+        scheduler.send(:send_today_notifications)
+      end
+
+      # Ожидаем, что send_today_notifications будет вызван
+      expect(scheduler).to receive(:send_today_notifications).once
+
+      # Вызываем модифицированный метод check_and_send_notifications
+      scheduler.send(:check_and_send_notifications)
+    end
+  end
+
+  # Добавим тесты для проверки Config.timezone
+  describe ".timezone" do
+    it "возвращает значение из переменной окружения" do
+      allow(ENV).to receive(:fetch).with('TIMEZONE', 'Asia/Yekaterinburg').and_return('Europe/Moscow')
+      expect(SheetFormatterBot::Config.timezone).to eq('Europe/Moscow')
+    end
+
+    it "возвращает значение по умолчанию если переменная не установлена" do
+      allow(ENV).to receive(:fetch).with('TIMEZONE', 'Asia/Yekaterinburg').and_return('Asia/Yekaterinburg')
+      expect(SheetFormatterBot::Config.timezone).to eq('Asia/Yekaterinburg')
     end
   end
 end

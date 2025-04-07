@@ -16,6 +16,7 @@ module SheetFormatterBot
       @hours_before = Config.notification_hours_before
       @tennis_time = Config.tennis_default_time
       @check_interval = Config.notification_check_interval
+      @timezone = TZInfo::Timezone.get(Config.timezone || 'Asia/Yekaterinburg')
     end
 
     def start
@@ -148,7 +149,10 @@ module SheetFormatterBot
 
     def check_and_send_notifications
       begin
-        today = Date.today
+        # Получаем текущее время в часовом поясе Екатеринбурга
+        now = @timezone.now
+        today = now.to_date
+
         log(:debug, "Проверка уведомлений на #{today}")
 
         # Получаем текущее время
@@ -156,7 +160,7 @@ module SheetFormatterBot
 
         # Парсим время начала тенниса на сегодня
         tennis_hour, tennis_min = @tennis_time.split(':').map(&:to_i)
-        tennis_time = Time.new(now.year, now.month, now.day, tennis_hour, tennis_min)
+        tennis_time = @timezone.local_time(now.year, now.month, now.day, tennis_hour, tennis_min)
 
         # Вычисляем, когда нужно отправить уведомление
         notification_time = tennis_time - (@hours_before * 60 * 60)

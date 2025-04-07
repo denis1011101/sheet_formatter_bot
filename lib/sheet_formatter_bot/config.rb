@@ -36,6 +36,10 @@ module SheetFormatterBot
       [Google::Apis::SheetsV4::AUTH_SPREADSHEETS]
     end
 
+    def timezone
+      ENV.fetch('TIMEZONE', 'Asia/Yekaterinburg')
+    end
+
     private
 
     def fetch_env(key)
