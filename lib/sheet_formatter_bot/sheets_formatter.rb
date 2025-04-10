@@ -42,6 +42,58 @@ module SheetFormatterBot
       @spreadsheet_data_cache[:data]
     end
 
+    # Метод для доступа к сервису Google Sheets API
+    def authenticated_service
+      @service ||= begin
+        log(:debug, "Инициализация Google Sheets Service...")
+        s = Google::Apis::SheetsV4::SheetsService.new
+        s.authorization = authorize_google_sheets
+        log(:debug, "Google Sheets Service инициализирован.")
+        s
+      rescue StandardError => e
+        log(:error, "Ошибка инициализации Google Sheets Service: #{e.message}")
+        raise Error, "Не удалось инициализировать Google Sheets Service: #{e.message}"
+      end
+    end
+
+    def spreadsheet_id
+      @spreadsheet_id
+    end
+
+    def clear_cache
+      @spreadsheet_data_cache[:data] = nil if @spreadsheet_data_cache
+    end
+
+    def update_cell_value(sheet_name, range_a1, value)
+      begin
+        log(:info, "Обновление значения ячейки #{sheet_name}!#{range_a1} на '#{value}'")
+
+        value_range = Google::Apis::SheetsV4::ValueRange.new(
+          range: "#{sheet_name}!#{range_a1}",
+          values: [[value]]
+        )
+
+        update_request = authenticated_service.update_spreadsheet_value(
+          spreadsheet_id,
+          "#{sheet_name}!#{range_a1}",
+          value_range,
+          value_input_option: 'USER_ENTERED'
+        )
+
+        # Сбрасываем кэш после изменения
+        @spreadsheet_data_cache[:data] = nil
+
+        log(:info, "Значение ячейки обновлено: #{sheet_name}!#{range_a1} -> '#{value}'")
+        return true
+      rescue Google::Apis::Error => e
+        log(:error, "Google API Error при обновлении ячейки: #{e.message} (Status: #{e.status_code}, Body: #{e.body})")
+        return false
+      rescue StandardError => e
+        log(:error, "Ошибка при обновлении ячейки: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
+        return false
+      end
+    end
+
     def apply_format(sheet_name, range_a1, format_type, value = nil)
       sheet_id = get_sheet_id(sheet_name)
       grid_range = parse_a1_range(range_a1, sheet_id)
@@ -72,19 +124,6 @@ module SheetFormatterBot
     def validate_credentials_path
       unless File.exist?(credentials_path)
         raise ConfigError, "Файл учетных данных Google не найден по пути: #{credentials_path}"
-      end
-    end
-
-    def authenticated_service
-      @service ||= begin
-        log(:debug, "Инициализация Google Sheets Service...")
-        s = Google::Apis::SheetsV4::SheetsService.new
-        s.authorization = authorize_google_sheets
-        log(:debug, "Google Sheets Service инициализирован.")
-        s
-      rescue StandardError => e
-        log(:error, "Ошибка инициализации Google Sheets Service: #{e.message}")
-        raise Error, "Не удалось инициализировать Google Sheets Service: #{e.message}"
       end
     end
 

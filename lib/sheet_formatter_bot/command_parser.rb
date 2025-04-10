@@ -16,11 +16,11 @@ module SheetFormatterBot
 
       COMMANDS.each do |cmd|
         match = text.match(cmd.pattern)
-        if match
-          log(:info, "Команда '#{text}' соответствует #{cmd.pattern}, вызов #{context.class}##{cmd.handler_method}")
-          context.send(cmd.handler_method, message, match.captures)
-          return true # Команда найдена и обработана
-        end
+        next unless match
+
+        log(:info, "Команда '#{text}' соответствует #{cmd.pattern}, вызов #{context.class}##{cmd.handler_method}")
+        context.send(cmd.handler_method, message, match.captures)
+        return true # Команда найдена и обработана
       end
 
       log(:info, "Команда '#{text}' не распознана.")
@@ -38,33 +38,39 @@ module SheetFormatterBot
 
       # --- Основные команды ---
       register(
-        /^\/start$/i,
+        %r{^/start$}i,
         :handle_start,
         "/start - Регистрация в боте и показ справки"
       )
 
       # --- Команды для управления сопоставлением имен ---
       register(
-        /^\/map\s+(\S+)\s+(@\S+|\S+@\S+|\d+)$/i,
+        %r{^/map\s+(\S+)\s+(@\S+|\S+@\S+|\d+)$}i,
         :handle_name_mapping,
         "/map <Имя_в_таблице> <@username или ID> - Сопоставить имя в таблице с пользователем Telegram"
       )
 
       register(
-        /^\/myname\s+(.+)$/i,
+        %r{^/myname\s+(.+)$}i,
         :handle_set_sheet_name,
         "/myname <Имя_в_таблице> - Указать свое имя в таблице"
       )
 
       register(
-        /^\/mappings$/i,
+        %r{^/mappings$}i,
         :handle_show_mappings,
-        "/mappings - Показать текущие сопоставления имен"
+        "/mappings - Показать текущие Список имён имен"
+      )
+
+      register(
+        %r{^/sync$}i,
+        :handle_sync_registry,
+        "/sync - Синхронизировать базу пользователей и сопоставлений (для администратора)"
       )
 
       # --- Команда для тестирования уведомлений ---
       register(
-        /^\/test$/i,
+        %r{^/test$}i,
         :handle_test_notification,
         "/test - Отправить тестовое уведомление"
       )
@@ -75,7 +81,7 @@ module SheetFormatterBot
 
     # --- Вспомогательный метод логирования ---
     def self.log(level, message)
-      puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] [#{level.upcase}] [CommandParser] #{message}"
+      puts "[#{Time.now.strftime("%Y-%m-%d %H:%M:%S")}] [#{level.upcase}] [CommandParser] #{message}"
     end
   end
 end

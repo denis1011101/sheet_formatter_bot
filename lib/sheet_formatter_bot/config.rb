@@ -40,6 +40,26 @@ module SheetFormatterBot
       ENV.fetch('TIMEZONE', 'Asia/Yekaterinburg')
     end
 
+    def morning_notification_hour
+      ENV.fetch('MORNING_NOTIFICATION_HOUR', '9').to_i
+    end
+
+    def evening_notification_hour
+      ENV.fetch('EVENING_NOTIFICATION_HOUR', '20').to_i
+    end
+
+    def hour_before_notification
+      ENV.fetch('HOUR_BEFORE_NOTIFICATION', 'true') == 'true'
+    end
+
+    def admin_telegram_ids
+      # Разделенный запятыми список ID в формате "123456,789012"
+      ids_str = ENV.fetch('ADMIN_TELEGRAM_IDS', '')
+
+      # Разбиваем строку и преобразуем в числа
+      ids_str.split(',').map(&:strip).map(&:to_i).reject(&:zero?)
+    end
+
     private
 
     def fetch_env(key)
