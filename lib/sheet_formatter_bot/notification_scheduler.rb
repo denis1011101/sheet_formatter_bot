@@ -12,6 +12,7 @@ module SheetFormatterBot
       @user_registry = bot.user_registry
       @running = false
       @thread = nil
+      @sent_notifications = {} # Хеш для отслеживания отправленных уведомлений
 
       # Загружаем конфигурацию из Config
       @hours_before = Config.notification_hours_before
@@ -168,6 +169,9 @@ module SheetFormatterBot
 
     def check_and_send_notifications
       begin
+        # Периодически очищаем старые записи об отправленных уведомлениях
+        cleanup_sent_notifications
+
         # Получаем текущее время в часовом поясе из конфигурации
         now = @timezone.now
         today = now.to_date
@@ -281,14 +285,36 @@ module SheetFormatterBot
     def send_notifications_for_game(game, time_description, notification_type)
       log(:info, "Отправляем #{notification_type} уведомление о игре #{time_description} в #{game[:time]}")
 
+      # Уникальный ключ для этой рассылки
+      today = @timezone.now.to_date.strftime('%Y-%m-%d')
+      notification_key = "#{today}:#{game[:date]}:#{notification_type}"
+
+      # Если на сегодня такие уведомления уже отправлялись, пропускаем
+      if @sent_notifications[notification_key]
+        log(:info, "Уведомления #{notification_type} для игры #{game[:date]} уже были отправлены сегодня")
+        return
+      end
+
+      players_notified = 0
+
       game[:players].each do |player_name|
         user = @user_registry.find_by_name(player_name)
         if user
           send_game_notification_to_user(user, game, time_description, notification_type)
+          players_notified += 1
         else
           log(:warn, "Telegram-пользователь для игрока не найден: #{player_name}")
         end
       end
+
+      # Отмечаем, что уведомления отправлены (только если были отправлены хотя бы 1)
+      @sent_notifications[notification_key] = Time.now if players_notified > 0
+    end
+
+    def cleanup_sent_notifications
+      # Удаляем записи старше одного дня
+      yesterday = @timezone.now - 86400 # 24 часа
+      @sent_notifications.delete_if { |_key, timestamp| timestamp < yesterday }
     end
 
     def send_game_notification_to_user(user, game, time_description, notification_type)

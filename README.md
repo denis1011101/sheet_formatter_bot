@@ -28,7 +28,7 @@ bundle exec bin/sheet_formatter_bot
 ### Запуск в фоновом режиме
 Чтобы запустить бота в фоновом режиме (с возможностью выйти из терминала):
 ```bash
-nohup bundle exec bin/sheet_formatter_bot > bot.log 2>&1 &
+nohup bundle exec bin/sheet_formatter_bot > "bot_$(date '+%Y-%m-%d_%H-%M-%S').log" 2>&1 &
 ```
 
 После выполнения этой команды:
@@ -38,6 +38,8 @@ nohup bundle exec bin/sheet_formatter_bot > bot.log 2>&1 &
 
 Для остановки бота, запущенного в фоновом режиме:
 ```bash
+ps aux | grep sheet_formatter_bot
+
 kill [PID]
 ```
 Где [PID] - идентификатор процесса, который был выведен при запуске.

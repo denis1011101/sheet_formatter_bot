@@ -17,31 +17,62 @@ module SheetFormatterBot
     end
 
     def run
-      log(:info, "Запуск Telegram бота...")
-      Telegram::Bot::Client.run(token) do |bot|
-        @bot_instance = bot # Сохраняем экземпляр клиента API
+      lock_file = File.join(Dir.pwd, '.bot_running.lock')
 
-        # Инициализируем планировщик уведомлений
-        @notification_scheduler = NotificationScheduler.new(bot: self, sheets_formatter: sheets_formatter)
-        @notification_scheduler.start
-
-        # Запускаем отдельный поток для периодического резервного копирования данных
-        start_backup_thread
-
-        log(:info, "Бот успешно подключился к Telegram. Планировщик уведомлений запущен.")
-        listen(bot)
+      if File.exist?(lock_file)
+        if process_still_running?(lock_file)
+          log(:error, "Бот уже запущен. Если вы уверены, что это не так, удалите файл .bot_running.lock")
+          exit(1)
+        else
+          log(:warn, "Найден файл блокировки, но процесс, вероятно, не запущен. Удаляем файл.")
+          File.delete(lock_file)
+        end
       end
-    rescue Telegram::Bot::Exceptions::ResponseError => e
-      log(:error,
-          "Критическая ошибка Telegram API при запуске: #{e.message} (Код: #{e.error_code}). Завершение работы.")
-      exit(1) # Выход, если не удалось подключиться
-    rescue StandardError => e
-      log(:error, "Критическая ошибка при запуске бота: #{e.message}\n#{e.backtrace.join("\n")}")
-      exit(1)
-    ensure
-      # Останавливаем планировщик уведомлений при завершении работы
-      @notification_scheduler&.stop
-      @backup_thread&.exit
+
+      # Записываем PID в файл блокировки
+      File.write(lock_file, Process.pid)
+
+      begin
+        log(:info, "Запуск Telegram бота...")
+        Telegram::Bot::Client.run(token) do |bot|
+          @bot_instance = bot # Сохраняем экземпляр клиента API
+
+          # Инициализируем планировщик уведомлений
+          @notification_scheduler = NotificationScheduler.new(bot: self, sheets_formatter: sheets_formatter)
+          @notification_scheduler.start
+
+          # Запускаем отдельный поток для периодического резервного копирования данных
+          start_backup_thread
+
+          log(:info, "Бот успешно подключился к Telegram. Планировщик уведомлений запущен.")
+          listen(bot)
+        end
+      rescue Telegram::Bot::Exceptions::ResponseError => e
+        log(:error,
+            "Критическая ошибка Telegram API при запуске: #{e.message} (Код: #{e.error_code}). Завершение работы.")
+        exit(1) # Выход, если не удалось подключиться
+      rescue StandardError => e
+        log(:error, "Критическая ошибка при запуске бота: #{e.message}\n#{e.backtrace.join("\n")}")
+        exit(1)
+      ensure
+        # Останавливаем планировщик уведомлений при завершении работы
+        @notification_scheduler&.stop
+        @backup_thread&.exit
+
+        # Удаляем файл блокировки при завершении работы
+        File.delete(lock_file) if File.exist?(lock_file)
+      end
+    end
+
+    def process_still_running?(lock_file)
+      begin
+        pid = File.read(lock_file).to_i
+        Process.getpgid(pid)  # Проверяем, существует ли процесс
+        true
+      rescue Errno::ESRCH
+        # Процесс не существует
+        false
+      end
     end
 
     def handle_sync_registry(message, _captures)
