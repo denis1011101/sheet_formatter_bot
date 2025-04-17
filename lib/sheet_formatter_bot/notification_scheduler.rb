@@ -241,19 +241,39 @@ module SheetFormatterBot
         end
       end
 
-      # Напоминание за 1 час до игры (если включено)
-      if Config.hour_before_notification
+      # Напоминание за 2 часа до игры (если включено)
+      if Config.final_reminder_notification
         if today_games.any?
           today_games.each do |game|
             # Парсим время игры
             game_hour, game_min = game[:time].split(':').map(&:to_i)
 
-            # Проверяем, остался ли до игры 1 час
+            # Проверяем, остался ли до игры 2 часа
             hours_before = game_hour - current_hour
-            if hours_before == 1 && game_min == 0 # Если игра в XX:00 и сейчас (XX-1):00
-              log(:info, "Отправляем напоминание за час до игры в #{game[:time]}")
+            if hours_before == 2 && game_min == 0 # Если игра в XX:00 и сейчас (XX-1):00
+              log(:info, "Отправляем напоминание за два часа до игры в #{game[:time]}")
               send_notifications_for_game(game, "сегодня", "скорое")
             end
+          end
+        end
+      end
+
+      # Уведомление за день до игры в 18:00
+      if current_hour == evening_hour
+        if tomorrow_games.any?
+          log(:info, "Отправляем уведомление в общий чат о завтрашних играх")
+          tomorrow_games.each do |game|
+           send_general_chat_notification(game, "завтра")
+          nd
+        end
+      end
+
+      # Уведомление в день игры в 13:00
+      if current_hour == afternoon_hour
+        if today_games.any?
+          log(:info, "Отправляем уведомление в общий чат о сегодняшних играх")
+          today_games.each do |game|
+            send_general_chat_notification(game, "сегодня")
           end
         end
       end
@@ -297,7 +317,10 @@ module SheetFormatterBot
 
       players_notified = 0
 
+      # Отправляем уведомления только реальным игрокам (не "отмена")
       game[:players].each do |player_name|
+        next if player_name.strip.downcase == "отмена"
+
         user = @user_registry.find_by_name(player_name)
         if user
           send_game_notification_to_user(user, game, time_description, notification_type)
@@ -309,6 +332,91 @@ module SheetFormatterBot
 
       # Отмечаем, что уведомления отправлены (только если были отправлены хотя бы 1)
       @sent_notifications[notification_key] = Time.now if players_notified > 0
+    end
+
+    def send_general_chat_notification(game, time_description)
+      general_chat_id = Config.general_chat_id
+      return unless general_chat_id # Если ID общего чата не указан, ничего не делаем
+
+      # Формируем сообщение
+      slots_with_trainer = []
+      slots_without_trainer = []
+
+      # Анализируем слоты с тренером (колонки 3-6)
+      for i in 3..6
+        slot_name = game[:players][i - 3]
+        # Проверяем, не является ли слот отмененным
+        if slot_name && slot_name.strip.downcase == "отмена"
+          slots_with_trainer << "Отменен"
+        else
+          slots_with_trainer << (slot_name.nil? || slot_name.strip.empty? ? "Свободно" : slot_name.strip)
+        end
+      end
+
+      # Анализируем слоты без тренера (колонки 7-10)
+      for i in 7..10
+        slot_name = game[:players][i - 3]
+        # Проверяем, не является ли слот отмененным
+        if slot_name && slot_name.strip.downcase == "отмена"
+          slots_without_trainer << "Отменен"
+        else
+          slots_without_trainer << (slot_name.nil? || slot_name.strip.empty? ? "Свободно" : slot_name.strip)
+        end
+      end
+
+      # Проверяем, есть ли доступные слоты (не отмененные и не занятые)
+      slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
+      slots_without_trainer_available = slots_without_trainer.any? { |s| s == "Свободно" }
+
+      # Формируем текст для слотов
+      slots_with_trainer_text = if slots_with_trainer.all? { |s| s == "Отменен" }
+                                  "Все слоты отменены"
+                                elsif slots_with_trainer_available
+                                  slots_with_trainer.map.with_index do |slot, idx|
+                                    slot == "Отменен" ? "#{idx + 1}. 🚫 Отменен" : (slot == "Свободно" ? "#{idx + 1}. ⚪ Свободно" : "#{idx + 1}. ✅ #{slot}")
+                                  end.join(", ")
+                                else
+                                  "Все места заняты"
+                                end
+
+      slots_without_trainer_text = if slots_without_trainer.all? { |s| s == "Отменен" }
+                                    "Все слоты отменены"
+                                  elsif slots_without_trainer_available
+                                    slots_without_trainer.map.with_index do |slot, idx|
+                                      slot == "Отменен" ? "#{idx + 1}. 🚫 Отменен" : (slot == "Свободно" ? "#{idx + 1}. ⚪ Свободно" : "#{idx + 1}. ✅ #{slot}")
+                                    end.join(", ")
+                                  else
+                                    "Все места заняты"
+                                  end
+
+      # Если все слоты отменены в обоих секциях, можно пропустить уведомление
+      if slots_with_trainer.all? { |s| s == "Отменен" } && slots_without_trainer.all? { |s| s == "Отменен" }
+        log(:info, "Все слоты отменены на #{game[:date]} - уведомление не отправляется")
+        return
+      end
+
+      message = <<~MESSAGE
+        📅 #{time_description.capitalize} игра в теннис:
+        🕒 Время: *#{game[:time]}*
+        📍 Место: *#{game[:place]}*
+
+        👥 *С тренером*: #{slots_with_trainer_text}
+        👥 *Без тренера*: #{slots_without_trainer_text}
+
+        Записаться на игру можно через бота: @#{Config.telegram_bot_username}
+      MESSAGE
+
+      # Отправляем сообщение в общий чат
+      begin
+        @bot.bot_instance.api.send_message(
+          chat_id: general_chat_id,
+          text: message,
+          parse_mode: 'Markdown'
+        )
+        log(:info, "Уведомление успешно отправлено в общий чат")
+      rescue Telegram::Bot::Exceptions::ResponseError => e
+        log(:error, "Ошибка при отправке уведомления в общий чат: #{e.message}")
+      end
     end
 
     def cleanup_sent_notifications

@@ -6,12 +6,12 @@ module SheetFormatterBot
     attr_reader :token, :sheets_formatter, :bot_instance, :user_registry
     attr_accessor :notification_scheduler
 
-    def initialize(token: Config.telegram_token, sheets_formatter: SheetsFormatter.new)
+    def initialize(token: Config.telegram_token, sheets_formatter: SheetsFormatter.new, user_registry: nil, notification_scheduler: nil)
       @token = token
       @sheets_formatter = sheets_formatter
       @bot_instance = nil # Инициализируется в run
-      @user_registry = UserRegistry.new
-      @notification_scheduler = nil # Будет установлен позже
+      @user_registry = user_registry || UserRegistry.new
+      @notification_scheduler = notification_scheduler # Будет установлен позже если nil
       @user_states = {} # Хранит состояние каждого пользователя в процессе регистрации
       log(:info, "TelegramBot инициализирован.")
     end
@@ -178,6 +178,8 @@ module SheetFormatterBot
               handle_booking_callback(message)
             elsif message.data.start_with?("menu:")
               handle_menu_callback(message)
+            elsif message.data.start_with?("admin:")
+              handle_admin_callback(message)
             else
               log(:warn, "Неизвестный тип callback: #{message.data}")
             end
@@ -285,6 +287,136 @@ module SheetFormatterBot
       end
     end
 
+    def show_admin_menu(chat_id)
+      # Проверяем, является ли пользователь администратором
+      admin_ids = Config.admin_telegram_ids
+      user_id = chat_id # В private chat, chat_id и user_id совпадают
+
+      unless admin_ids.include?(user_id)
+        send_message(chat_id, "⛔ У вас нет прав администратора для доступа к этому меню.")
+        return nil
+      end
+
+      menu_text = <<~MENU
+        🔧 *Панель администратора*
+
+        Выберите действие:
+      MENU
+
+      # Создаем клавиатуру с кнопками действий для администратора
+      keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+        inline_keyboard: [
+          [
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: "🔄 Синхронизировать",
+              callback_data: "admin:sync"
+            )
+          ],
+          [
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: "❌ Отменить корт",
+              callback_data: "admin:cancel"
+            )
+          ],
+          [
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: "🔗 Сопоставить имя",
+              callback_data: "admin:map"
+            )
+          ],
+          [
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: "« Вернуться в главное меню",
+              callback_data: "menu:back"
+            )
+          ]
+        ]
+      )
+
+      send_message(chat_id, menu_text, reply_markup: keyboard)
+
+      true
+    end
+
+    def handle_admin_callback(callback_query)
+      action = callback_query.data.split(":")[1]
+      user_id = callback_query.from.id
+      chat_id = callback_query.message.chat.id
+
+      admin_ids = Config.admin_telegram_ids
+      unless admin_ids.include?(user_id)
+        answer_callback_query(callback_query.id, "У вас нет прав администратора.", true)
+        return
+      end
+
+      case action
+      when "sync"
+        answer_callback_query(callback_query.id, "Выполняю синхронизацию...")
+
+        users_count_before = @user_registry.size
+        mappings_count_before = @user_registry.instance_variable_get(:@name_mapping).size
+
+        @user_registry.synchronize_users_and_mappings
+
+        users_count_after = @user_registry.size
+        mappings_count_after = @user_registry.instance_variable_get(:@name_mapping).size
+
+        report = <<~REPORT
+          📊 Синхронизация выполнена!
+
+          Пользователей: #{users_count_before} -> #{users_count_after}
+          Сопоставлений: #{mappings_count_before} -> #{mappings_count_after}
+
+          Пользователи с указанным именем в таблице:
+        REPORT
+
+        users_with_sheet_name = @user_registry.all_users.select { |u| u.sheet_name }
+        if users_with_sheet_name.any?
+          users_with_sheet_name.each do |user|
+            report += "\n- #{user.display_name} -> «#{user.sheet_name}»"
+          end
+        else
+          report += "\nНет пользователей с указанным именем в таблице!"
+        end
+
+        send_message(chat_id, report)
+
+        @user_registry.create_backup
+
+      when "cancel"
+        answer_callback_query(callback_query.id)
+
+        @user_states[user_id] = { state: :awaiting_cancel_date }
+
+        send_message(
+          chat_id,
+          "Введите дату в формате ДД.ММ.ГГГГ (например, 01.05.2023):"
+        )
+
+      when "map"
+        answer_callback_query(callback_query.id)
+
+        @user_states[user_id] = { state: :awaiting_map_name }
+
+        send_message(
+          chat_id,
+          "Введите имя в таблице для сопоставления:"
+        )
+      end
+    end
+
+    def answer_callback_query(callback_query_id, text = nil, show_alert = false)
+      return unless @bot_instance
+
+      @bot_instance.api.answer_callback_query(
+        callback_query_id: callback_query_id,
+        text: text,
+        show_alert: show_alert
+      )
+    rescue Telegram::Bot::Exceptions::ResponseError => e
+      log_telegram_api_error(e)
+    end
+
     def handle_menu_callback(callback_query)
       action = callback_query.data.split(":")[1]
       user_id = callback_query.from.id
@@ -376,6 +508,15 @@ module SheetFormatterBot
           send_message(chat_id, "❌ Не удалось отправить тестовое уведомление. Возможно, вы заблокировали бота?")
         end
 
+      when "admin"
+        # Открываем панель администратора
+        @bot_instance.api.answer_callback_query(
+          callback_query_id: callback_query.id,
+          text: "Открываю панель администратора..."
+        )
+
+        show_admin_menu(chat_id)
+
       when "back"
         # Возвращаемся к главному меню
         @bot_instance.api.answer_callback_query(
@@ -455,6 +596,70 @@ module SheetFormatterBot
           # Обрабатываем изменение имени
           handle_name_change(message, text)
           return true
+
+        # Добавляем новые состояния для админских действий
+        when :awaiting_cancel_date
+          # Обрабатываем ввод даты для отмены корта
+          if text =~ /^\d{2}\.\d{2}\.\d{4}$/
+            @user_states[user_id] = { state: :awaiting_cancel_court, date: text }
+            send_message(
+              message.chat.id,
+              "Теперь введите номер корта (1-8):"
+            )
+          else
+            send_message(
+              message.chat.id,
+              "⚠️ Некорректный формат даты. Введите дату в формате ДД.ММ.ГГГГ (например, 01.05.2023):"
+            )
+          end
+          return true
+
+        when :awaiting_cancel_court
+          # Обрабатываем ввод номера корта
+          if text =~ /^[1-8]$/
+            date_str = @user_states[user_id][:date]
+            court_num = text.to_i
+
+            # Отмечаем корт как отмененный и вызываем существующую логику
+            handle_cancel_court(message, [date_str, text])
+
+            # Сбрасываем состояние
+            @user_states.delete(user_id)
+
+            # Показываем админ-панель снова
+            show_admin_menu(message.chat.id)
+          else
+            send_message(
+              message.chat.id,
+              "⚠️ Некорректный номер корта. Введите число от 1 до 8:"
+            )
+          end
+          return true
+
+        when :awaiting_map_name
+          # Обрабатываем ввод имени для сопоставления
+          sheet_name = text.strip
+          @user_states[user_id] = { state: :awaiting_map_user, sheet_name: sheet_name }
+          send_message(
+            message.chat.id,
+            "Теперь введите @username или ID пользователя Telegram:"
+          )
+          return true
+
+        when :awaiting_map_user
+          # Обрабатываем ввод пользователя для сопоставления
+          sheet_name = @user_states[user_id][:sheet_name]
+          user_identifier = text.strip
+
+          # Вызываем существующую логику сопоставления имени
+          handle_name_mapping(message, [sheet_name, user_identifier])
+
+          # Сбрасываем состояние
+          @user_states.delete(user_id)
+
+          # Показываем админ-панель снова
+          show_admin_menu(message.chat.id)
+          return true
         end
       end
 
@@ -483,34 +688,47 @@ module SheetFormatterBot
         Выберите действие:
       MENU
 
-      # Создаем клавиатуру с кнопками действий
-      keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
-        inline_keyboard: [
-          [
-            Telegram::Bot::Types::InlineKeyboardButton.new(
-              text: "🗓️ Доступные слоты",
-              callback_data: "menu:slots"
-            )
-          ],
-          [
-            Telegram::Bot::Types::InlineKeyboardButton.new(
-              text: "📝 Изменить имя",
-              callback_data: "menu:change_name"
-            )
-          ],
-          [
-            Telegram::Bot::Types::InlineKeyboardButton.new(
-              text: "👥 Список имён",
-              callback_data: "menu:mappings"
-            )
-          ],
-          [
-            Telegram::Bot::Types::InlineKeyboardButton.new(
-              text: "🧪 Тестовое уведомление",
-              callback_data: "menu:test_notification"
-            )
-          ]
+      # Создаем массив кнопок
+      keyboard_buttons = [
+        [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "🗓️ Доступные слоты",
+            callback_data: "menu:slots"
+          )
+        ],
+        [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "📝 Изменить имя",
+            callback_data: "menu:change_name"
+          )
+        ],
+        [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "👥 Список имён",
+            callback_data: "menu:mappings"
+          )
+        ],
+        [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "🧪 Тестовое уведомление",
+            callback_data: "menu:test_notification"
+          )
         ]
+      ]
+
+      # Добавляем кнопку администратора для админов
+      admin_ids = Config.admin_telegram_ids
+      if admin_ids.include?(user_id)
+        keyboard_buttons << [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "🔧 Панель администратора",
+            callback_data: "menu:admin"
+          )
+        ]
+      end
+
+      keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+        inline_keyboard: keyboard_buttons
       )
 
       send_message(chat_id, menu_text, reply_markup: keyboard)
@@ -518,7 +736,6 @@ module SheetFormatterBot
 
     def handle_name_change(message, name)
       user_id = message.from.id
-      user = @user_registry.find_by_telegram_id(user_id)
 
       # Удаляем лишние пробелы с обеих сторон имени
       clean_name = name.strip
@@ -579,7 +796,6 @@ module SheetFormatterBot
 
     def handle_name_input(message, name)
       user_id = message.from.id
-      user = @user_registry.find_by_telegram_id(user_id)
 
       # Удаляем лишние пробелы с обеих сторон имени
       clean_name = name.strip
@@ -676,16 +892,21 @@ module SheetFormatterBot
       message = "👥 *#{header}*:\n"
 
       slots.each_with_index do |slot, idx|
-        message += if slot[:name]
-                     "#{idx + 1}. #{slot[:name]} ✅\n"
-                   else
-                     "#{idx + 1}. _Свободно_ ⚪\n"
-                   end
+        if slot[:name]
+          # Проверяем, является ли слот отмененным
+          if slot[:name].downcase == "отмена"
+            message += "#{idx + 1}. 🚫 _Отменен_ ❌\n"
+          else
+            message += "#{idx + 1}. #{slot[:name]} ✅\n"
+          end
+        else
+          message += "#{idx + 1}. _Свободно_ ⚪\n"
+        end
       end
 
       send_message(chat_id, message)
 
-      # Создаем клавиатуру с кнопками для свободных слотов
+      # Создаем клавиатуру с кнопками только для свободных слотов (не отмененных)
       empty_slots = slots.select { |s| s[:name].nil? }
 
       if empty_slots.any?
@@ -708,7 +929,73 @@ module SheetFormatterBot
           )
         end
       else
-        send_message(chat_id, "К сожалению, все слоты заняты.")
+        send_message(chat_id, "К сожалению, все слоты заняты или отменены.")
+      end
+    end
+
+    def handle_cancel_court(message, captures)
+      # Только администраторы могут использовать эту команду
+      admin_ids = Config.admin_telegram_ids
+      unless admin_ids.include?(message.from.id)
+        send_message(message.chat.id, "⛔ Только администратор может выполнять эту команду.")
+        return
+      end
+
+      date_str = captures[0] # формат DD.MM.YYYY
+      court_num = captures[1].to_i # номер корта (1-8)
+
+      # Проверяем корректность номера корта
+      unless (1..8).include?(court_num)
+        send_message(message.chat.id, "❌ Некорректный номер корта. Должен быть от 1 до 8.")
+        return
+      end
+
+      # Преобразуем номер корта в индекс столбца
+      # Корты 1-4 - с тренером (колонки 3-6), корты 5-8 - без тренера (колонки 7-10)
+      column_index = court_num <= 4 ? court_num + 2 : court_num + 2
+
+      # Получаем данные таблицы
+      spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+
+      # Ищем строку с нужной датой
+      row_index = nil
+      spreadsheet_data.each_with_index do |row, idx|
+        next unless row[0] == date_str
+        row_index = idx
+        break
+      end
+
+      unless row_index
+        send_message(message.chat.id, "❌ Дата не найдена в таблице.")
+        return
+      end
+
+      # Получаем букву колонки для A1 нотации
+      col_letter = (column_index + 'A'.ord).chr
+      cell_a1 = "#{col_letter}#{row_index + 1}"
+
+      # Устанавливаем "отмена" в выбранную ячейку
+      if update_cell_value(Config.default_sheet_name, cell_a1, "отмена")
+        # Применяем красный цвет текста
+        @sheets_formatter.apply_format(Config.default_sheet_name, cell_a1, :text_color, "red")
+
+        send_message(
+          message.chat.id,
+          "✅ Корт #{court_num} на дату #{date_str} отмечен как отмененный."
+        )
+
+        # Также можно отправить уведомление в общий чат
+        if Config.general_chat_id
+          send_message(
+            Config.general_chat_id,
+            "⚠️ *ОТМЕНА КОРТА*\nКорт #{court_num} на дату #{date_str} отменен."
+          )
+        end
+      else
+        send_message(
+          message.chat.id,
+          "❌ Произошла ошибка при отметке корта как отмененного."
+        )
       end
     end
 

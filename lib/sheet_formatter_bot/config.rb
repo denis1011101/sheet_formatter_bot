@@ -48,8 +48,8 @@ module SheetFormatterBot
       ENV.fetch('EVENING_NOTIFICATION_HOUR', '20').to_i
     end
 
-    def hour_before_notification
-      ENV.fetch('HOUR_BEFORE_NOTIFICATION', 'true') == 'true'
+    def final_reminder_notification
+      ENV.fetch('FINAL_REMINDER_NOTIFICATION', 'true') == 'true'
     end
 
     def admin_telegram_ids
@@ -58,6 +58,10 @@ module SheetFormatterBot
 
       # Разбиваем строку и преобразуем в числа
       ids_str.split(',').map(&:strip).map(&:to_i).reject(&:zero?)
+    end
+
+    def general_chat_id
+      ENV.fetch('GENERAL_CHAT_ID', nil)&.to_i
     end
 
     private
