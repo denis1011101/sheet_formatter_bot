@@ -264,7 +264,7 @@ module SheetFormatterBot
           log(:info, "Отправляем уведомление в общий чат о завтрашних играх")
           tomorrow_games.each do |game|
            send_general_chat_notification(game, "завтра")
-          nd
+          end
         end
       end
 

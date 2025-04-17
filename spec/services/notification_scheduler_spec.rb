@@ -124,7 +124,11 @@ RSpec.describe SheetFormatterBot::NotificationScheduler do
         .and_return(false)
 
       expect(bot_instance.api).to receive(:answer_callback_query)
-        .with(callback_query_id: "123", text: "Произошла ошибка при обновлении данных.")
+        .with(
+          callback_query_id: "123",
+          text: "Произошла ошибка при обновлении данных. Убедитесь, что ваше имя правильно указано в таблице.",
+          show_alert: true
+        )
 
       scheduler.handle_attendance_callback(callback_query)
     end
