@@ -450,13 +450,35 @@ module SheetFormatterBot
       general_chat_id = Config.general_chat_id
       return unless general_chat_id # Если ID общего чата не указан, ничего не делаем
 
+      # Создаем уникальный ключ для отслеживания отправленных уведомлений в общий чат
+      today = @timezone.now.to_date.strftime('%Y-%m-%d')
+      notification_key = "general_chat:#{today}:#{game[:date]}:#{time_description}"
+
+      # Проверяем, было ли уже отправлено это уведомление сегодня
+      if @sent_notifications[notification_key]
+        log(:info, "Уведомление в общий чат о игре #{game[:date]} (#{time_description}) уже было отправлено сегодня")
+        return
+      end
+
+        # Получаем полную строку данных из таблицы
+        full_row_data = nil
+        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+        spreadsheet_data.each do |row|
+          if row[0] == game[:date]
+            full_row_data = row
+            break
+          end
+        end
+
+        return unless full_row_data
+
       # Формируем сообщение
       slots_with_trainer = []
       slots_without_trainer = []
 
       # Анализируем слоты с тренером (колонки 3-6)
       for i in 3..6
-        slot_name = game[:players][i - 3]
+        slot_name = full_row_data[i]
         # Проверяем, не является ли слот отмененным
         if slot_name && slot_name.strip.downcase == "отмена"
           slots_with_trainer << "Отменен"
@@ -467,7 +489,7 @@ module SheetFormatterBot
 
       # Анализируем слоты без тренера (колонки 7-10)
       for i in 7..10
-        slot_name = game[:players][i - 3]
+        slot_name = full_row_data[i]
         # Проверяем, не является ли слот отмененным
         if slot_name && slot_name.strip.downcase == "отмена"
           slots_without_trainer << "Отменен"
@@ -480,42 +502,22 @@ module SheetFormatterBot
       slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
       slots_without_trainer_available = slots_without_trainer.any? { |s| s == "Свободно" }
 
-      # Определяем, все ли места заняты
-      all_slots_busy = !slots_with_trainer_available && !slots_without_trainer_available &&
-                       !slots_with_trainer.all? { |s| s == "Отменен" } &&
-                       !slots_without_trainer.all? { |s| s == "Отменен" }
-
-      # Проверяем особые случаи
-      trainer_slots_occupied = !slots_with_trainer_available && !slots_with_trainer.all? { |s| s == "Отменен" }
-      trainer_slots_cancelled = slots_with_trainer.all? { |s| s == "Отменен" }
-
-      other_slots_occupied = !slots_without_trainer_available && !slots_without_trainer.all? { |s| s == "Отменен" }
-      other_slots_cancelled = slots_without_trainer.all? { |s| s == "Отменен" }
-
-      # Проверяем оба варианта: тренер заняты/другие отменены или тренер отменены/другие заняты
-      special_case_1 = trainer_slots_occupied && other_slots_cancelled
-      special_case_2 = trainer_slots_cancelled && other_slots_occupied
-
-      # Формируем текст для слотов
+      # Формируем текст для слотов, всегда показывая детальную информацию
       slots_with_trainer_text = if slots_with_trainer.all? { |s| s == "Отменен" }
                                   "Все слоты отменены"
-                                elsif slots_with_trainer_available
+                                else
                                   slots_with_trainer.map.with_index do |slot, idx|
                                     slot == "Отменен" ? "#{idx + 1}. 🚫 Отменен" : (slot == "Свободно" ? "#{idx + 1}. ⚪ Свободно" : "#{idx + 1}. ✅ #{slot}")
                                   end.join(", ")
-                                else
-                                  "Все места заняты"
                                 end
 
       slots_without_trainer_text = if slots_without_trainer.all? { |s| s == "Отменен" }
-                                    "Все слоты отменены"
-                                  elsif slots_without_trainer_available
-                                    slots_without_trainer.map.with_index do |slot, idx|
-                                      slot == "Отменен" ? "#{idx + 1}. 🚫 Отменен" : (slot == "Свободно" ? "#{idx + 1}. ⚪ Свободно" : "#{idx + 1}. ✅ #{slot}")
-                                    end.join(", ")
-                                  else
-                                    "Все места заняты"
-                                  end
+                                     "Все слоты отменены"
+                                   else
+                                     slots_without_trainer.map.with_index do |slot, idx|
+                                       slot == "Отменен" ? "#{idx + 1}. 🚫 Отменен" : (slot == "Свободно" ? "#{idx + 1}. ⚪ Свободно" : "#{idx + 1}. ✅ #{slot}")
+                                     end.join(", ")
+                                   end
 
       # Если все слоты отменены в обоих секциях, можно пропустить уведомление
       if slots_with_trainer.all? { |s| s == "Отменен" } && slots_without_trainer.all? { |s| s == "Отменен" }
@@ -523,47 +525,22 @@ module SheetFormatterBot
         return
       end
 
-      # Выбираем подходящее сообщение в зависимости от занятости слотов
-      if special_case_1 || special_case_2
-        # Особый случай: одна категория слотов занята, другая отменена
-        message = <<~MESSAGE
-          📅 #{time_description.capitalize} игра в теннис:
-          🕒 Время: *#{game[:time]}*
-          📍 Место: *#{game[:place]}*
+      # Определяем, все ли места заняты
+      all_slots_busy = !slots_with_trainer_available && !slots_without_trainer_available &&
+                       !slots_with_trainer.all? { |s| s == "Отменен" } &&
+                       !slots_without_trainer.all? { |s| s == "Отменен" }
 
-          👥 *С тренером*: #{slots_with_trainer_text}
-          👥 *Без тренера*: #{slots_without_trainer_text}
+      # Формируем сообщение
+      message = <<~MESSAGE
+        📅 #{time_description.capitalize} игра в теннис:
+        🕒 Время: *#{game[:time]}*
+        📍 Место: *#{game[:place]}*
 
-          Запись на свободные места не доступна.
-        MESSAGE
-      elsif all_slots_busy
-        # Если все места заняты, отправляем сообщение о возможности управления записью
-        message = <<~MESSAGE
-          📅 #{time_description.capitalize} игра в теннис:
-          🕒 Время: *#{game[:time]}*
-          📍 Место: *#{game[:place]}*
+        👥 *С тренером*: #{slots_with_trainer_text}
+        👥 *Без тренера*: #{slots_without_trainer_text}
 
-          ℹ️ *Все места заняты!*
-
-          👥 *С тренером*: #{slots_with_trainer_text}
-          👥 *Без тренера*: #{slots_without_trainer_text}
-
-          Если вы хотите отменить свою запись или изменить статус участия,
-          воспользуйтесь ботом: @#{Config.telegram_bot_username}
-        MESSAGE
-      else
-        # Если есть свободные места, отправляем стандартное сообщение
-        message = <<~MESSAGE
-          📅 #{time_description.capitalize} игра в теннис:
-          🕒 Время: *#{game[:time]}*
-          📍 Место: *#{game[:place]}*
-
-          👥 *С тренером*: #{slots_with_trainer_text}
-          👥 *Без тренера*: #{slots_without_trainer_text}
-
-          Записаться на игру можно через бота: @#{Config.telegram_bot_username}
-        MESSAGE
-      end
+        #{all_slots_busy ? "Если вы хотите отменить свою запись или изменить статус участия,\nвоспользуйтесь ботом: @#{Config.telegram_bot_username}" : "Записаться на игру можно через бота: @#{Config.telegram_bot_username}"}
+      MESSAGE
 
       # Отправляем сообщение в общий чат
       begin
@@ -572,6 +549,10 @@ module SheetFormatterBot
           text: message,
           parse_mode: 'Markdown'
         )
+
+        # Запоминаем, что уведомление отправлено
+        @sent_notifications[notification_key] = Time.now
+
         log(:info, "Уведомление успешно отправлено в общий чат")
       rescue Telegram::Bot::Exceptions::ResponseError => e
         log(:error, "Ошибка при отправке уведомления в общий чат: #{e.message}")
