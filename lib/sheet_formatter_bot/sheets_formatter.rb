@@ -42,6 +42,49 @@ module SheetFormatterBot
       @spreadsheet_data_cache[:data]
     end
 
+    def get_cell_formats(sheet_name, cell_a1)
+      # Обновляем кеш, если необходимо
+      return nil if sheet_name.nil? || cell_a1.nil?
+
+      begin
+        # Получаем информацию о форматировании ячейки
+        result = authenticated_service.get_spreadsheet(
+          spreadsheet_id,
+          fields: 'sheets.data.rowData.values.effectiveFormat',
+          ranges: ["#{sheet_name}!#{cell_a1}"]
+        )
+
+        # Анализируем результат
+        return nil if result.sheets.empty? || result.sheets[0].data.empty?
+
+        values = result.sheets[0].data[0].row_data&.first&.values
+        return nil unless values && !values.empty?
+
+        format = values.first.effective_format
+        return nil unless format
+
+        # Возвращаем информацию о форматировании в виде хеша
+        formats = {}
+
+        # Получаем цвет текста, если он установлен
+        if format.text_format && format.text_format.foreground_color
+          color = format.text_format.foreground_color
+          if color.red == 1 && color.green < 0.3 && color.blue < 0.3
+            formats[:text_color] = "red"
+          elsif color.green == 1 && color.red < 0.3 && color.blue < 0.3
+            formats[:text_color] = "green"
+          elsif color.red == 1 && color.green == 1 && color.blue < 0.3
+            formats[:text_color] = "yellow"
+          end
+        end
+
+        return formats
+      rescue Google::Apis::ClientError => e
+        log(:error, "Ошибка при получении форматирования ячейки #{cell_a1}: #{e.message}")
+        return nil
+      end
+    end
+
     # Метод для доступа к сервису Google Sheets API
     def authenticated_service
       @service ||= begin

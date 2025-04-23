@@ -46,10 +46,114 @@ module SheetFormatterBot
       log(:info, "Планировщик уведомлений остановлен")
     end
 
+    def get_user_current_attendance_status(sheet_name, date_str)
+      begin
+        # Получаем данные таблицы
+        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+
+        # Очищаем имя от лишних пробелов
+        clean_player_name = sheet_name.strip
+
+        # Проходим по данным и ищем ячейку с именем игрока
+        spreadsheet_data.each_with_index do |row, row_idx|
+          next unless row[0] == date_str  # Ищем только в строке с нужной датой
+
+          # Проверяем ячейки в диапазоне, где могут быть имена игроков (колонки 3-10)
+          (3..10).each do |col_idx|
+            cell = row[col_idx].to_s
+
+            # Сравниваем с учетом возможных пробелов в конце
+            if cell.strip == clean_player_name
+              # Проверяем цвет текста в этой ячейке
+              col_letter = (col_idx + 'A'.ord).chr
+              cell_a1 = "#{col_letter}#{row_idx + 1}"
+
+              formats = @sheets_formatter.get_cell_formats(Config.default_sheet_name, cell_a1)
+              if formats && formats[:text_color]
+                case formats[:text_color]
+                when "green"
+                  return "yes"
+                when "red"
+                  return "no"
+                when "yellow"
+                  return "maybe"
+                end
+              end
+
+              # Если формат не установлен, считаем что статус не определен
+              return nil
+            end
+          end
+        end
+
+        # Не нашли имя игрока на указанную дату
+        return nil
+      rescue StandardError => e
+        log(:error, "Ошибка при получении статуса посещения: #{e.message}")
+        return nil
+      end
+    end
+
     # Метод для обработки ответов на уведомления
     def handle_attendance_callback(callback_query)
       data = callback_query.data
       _, response, date_str = data.split(':')
+
+      # Специальная обработка для "no_reask" - когда пользователь отвечает "Нет" на повторное уведомление
+      if response == "no_reask"
+        # Отправляем новое сообщение с тремя кнопками
+        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+          inline_keyboard: [
+            [
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: '✅ Да',
+                callback_data: "attendance:yes:#{date_str}"
+              ),
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: '❌ Нет',
+                callback_data: "attendance:no:#{date_str}"
+              ),
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: '🤔 Не уверен',
+                callback_data: "attendance:maybe:#{date_str}"
+              )
+            ]
+          ]
+        )
+
+        message = <<~MESSAGE
+          🎾 *ИЗМЕНЕНИЕ СТАТУСА УЧАСТИЯ*
+
+          📅 Дата: *#{date_str}*
+
+          Пожалуйста, выберите новый статус участия:
+        MESSAGE
+
+        begin
+          # Убираем кнопки с исходного сообщения
+          @bot.bot_instance.api.edit_message_reply_markup(
+            chat_id: callback_query.message.chat.id,
+            message_id: callback_query.message.message_id
+          )
+
+          # Отправляем новое сообщение с тремя вариантами
+          @bot.bot_instance.api.send_message(
+            chat_id: callback_query.message.chat.id,
+            text: message,
+            parse_mode: "Markdown",
+            reply_markup: keyboard
+          )
+
+          @bot.bot_instance.api.answer_callback_query(
+            callback_query_id: callback_query.id,
+            text: "Выберите свой статус участия"
+          )
+        rescue StandardError => e
+          log(:error, "Ошибка при обработке ответа 'no_reask': #{e.message}")
+        end
+
+        return
+      end
 
       return unless ['yes', 'no', 'maybe'].include?(response)
 
@@ -75,6 +179,10 @@ module SheetFormatterBot
         return
       end
 
+      # Получаем предыдущий статус
+      previous_status = get_user_current_attendance_status(sheet_name, date_str)
+      is_changing = previous_status.nil? ? false : (previous_status != response)
+
       # Обновляем цвет текста ячейки в таблице
       color = case response
               when 'yes' then 'green'
@@ -87,9 +195,24 @@ module SheetFormatterBot
       if update_attendance_in_sheet(date_str, sheet_name, color)
         # Отправляем подтверждение
         message = case response
-                  when 'yes' then "✅ Отлично! Ваш ответ 'Да' зарегистрирован."
-                  when 'no' then "❌ Жаль! Ваш ответ 'Нет' зарегистрирован."
-                  when 'maybe' then "🤔 Понятно. Ваш ответ 'Не уверен' зарегистрирован."
+                  when 'yes'
+                    if is_changing && previous_status
+                      "✅ Вы изменили свой ответ на 'Да'. Будем ждать вас на игре!"
+                    else
+                      "✅ Отлично! Ваш ответ 'Да' зарегистрирован."
+                    end
+                  when 'no'
+                    if is_changing && previous_status
+                      "❌ Вы изменили свой ответ на 'Нет'. Жаль, что не сможете прийти."
+                    else
+                      "❌ Жаль! Ваш ответ 'Нет' зарегистрирован."
+                    end
+                  when 'maybe'
+                    if is_changing && previous_status
+                      "🤔 Вы изменили свой ответ на 'Не уверен'. Надеемся на положительное решение!"
+                    else
+                      "🤔 Понятно. Ваш ответ 'Не уверен' зарегистрирован."
+                    end
                   end
 
         @bot.bot_instance.api.answer_callback_query(
@@ -179,103 +302,92 @@ module SheetFormatterBot
 
         log(:debug, "Проверка уведомлений на #{today}")
 
-        # Проверяем предстоящие игры на сегодня и завтра
-        check_games_and_notify(today, tomorrow, now)
-      rescue StandardError => e
-        log(:error, "Ошибка при проверке уведомлений: #{e.message}\n#{e.backtrace.join("\n")}")
-      end
-    end
+        # Получаем данные из таблицы один раз для оптимизации
+        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
 
-    def check_games_and_notify(today, tomorrow, now)
-      # Получаем данные из таблицы один раз для оптимизации
-      spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+        # Получаем текущий час в часовом поясе пользователя
+        current_hour = now.hour
 
-      # Получаем текущий час в часовом поясе пользователя
-      current_hour = now.hour
+        # Определяем часы уведомлений из конфигурации
+        afternoon_hour = Config.morning_notification_hour # 13:00 (переименовано, но используем существующую переменную)
+        evening_hour = Config.evening_notification_hour   # 18:00 (уже настроено в .env)
 
-      # Определяем часы уведомлений из конфигурации
-      afternoon_hour = Config.morning_notification_hour # 13:00 (переименовано, но используем существующую переменную)
-      evening_hour = Config.evening_notification_hour   # 18:00 (уже настроено в .env)
+        # Проверяем игры на сегодня
+        today_games = find_games_for_date(spreadsheet_data, today.strftime('%d.%m.%Y'))
 
-      # Проверяем игры на сегодня
-      today_games = find_games_for_date(spreadsheet_data, today.strftime('%d.%m.%Y'))
+        # Проверяем игры на завтра
+        tomorrow_games = find_games_for_date(spreadsheet_data, tomorrow.strftime('%d.%m.%Y'))
 
-      # Проверяем игры на завтра
-      tomorrow_games = find_games_for_date(spreadsheet_data, tomorrow.strftime('%d.%m.%Y'))
+        # Дневное уведомление (13:00) о сегодняшних и завтрашних играх
+        if current_hour == afternoon_hour
+          # Если есть игры сегодня
+          if today_games.any?
+            log(:info, "Отправляем дневное напоминание об играх сегодня (всего: #{today_games.count})")
+            today_games.each do |game|
+              send_notifications_for_game(game, "сегодня", "дневное")
+            end
+          end
 
-      # Дневное уведомление (13:00) о сегодняшних и завтрашних играх
-      if current_hour == afternoon_hour
-        # Если есть игры сегодня
-        if today_games.any?
-          log(:info, "Отправляем дневное напоминание об играх сегодня (всего: #{today_games.count})")
-          today_games.each do |game|
-            send_notifications_for_game(game, "сегодня", "дневное")
+          # Если есть игры завтра
+          if tomorrow_games.any?
+            log(:info, "Отправляем дневное напоминание об играх завтра (всего: #{tomorrow_games.count})")
+            tomorrow_games.each do |game|
+              send_notifications_for_game(game, "завтра", "дневное")
+            end
+          end
+
+          # Уведомление в день игры в 13:00
+          if today_games.any?
+            log(:info, "Отправляем уведомление в общий чат о сегодняшних играх")
+            today_games.each do |game|
+              send_general_chat_notification(game, "сегодня")
+            end
           end
         end
 
-        # Если есть игры завтра
-        if tomorrow_games.any?
-          log(:info, "Отправляем дневное напоминание об играх завтра (всего: #{tomorrow_games.count})")
-          tomorrow_games.each do |game|
-            send_notifications_for_game(game, "завтра", "дневное")
+        # Вечернее уведомление (18:00) о сегодняшних и завтрашних играх
+        if current_hour == evening_hour
+          # Если есть игры сегодня
+          if today_games.any?
+            log(:info, "Отправляем вечернее напоминание об играх сегодня (всего: #{today_games.count})")
+            today_games.each do |game|
+              send_notifications_for_game(game, "сегодня", "вечернее")
+            end
+          end
+
+          # Если есть игры завтра
+          if tomorrow_games.any?
+            log(:info, "Отправляем вечернее напоминание об играх завтра (всего: #{tomorrow_games.count})")
+            tomorrow_games.each do |game|
+              send_notifications_for_game(game, "завтра", "вечернее")
+            end
+          end
+
+          # Уведомление за день до игры в 18:00
+          if tomorrow_games.any?
+            log(:info, "Отправляем уведомление в общий чат о завтрашних играх")
+            tomorrow_games.each do |game|
+              send_general_chat_notification(game, "завтра")
+            end
           end
         end
-      end
 
-      # Вечернее уведомление (18:00) о сегодняшних и завтрашних играх
-      if current_hour == evening_hour
-        # Если есть игры сегодня
-        if today_games.any?
-          log(:info, "Отправляем вечернее напоминание об играх сегодня (всего: #{today_games.count})")
-          today_games.each do |game|
-            send_notifications_for_game(game, "сегодня", "вечернее")
-          end
-        end
-
-        # Если есть игры завтра
-        if tomorrow_games.any?
-          log(:info, "Отправляем вечернее напоминание об играх завтра (всего: #{tomorrow_games.count})")
-          tomorrow_games.each do |game|
-            send_notifications_for_game(game, "завтра", "вечернее")
-          end
-        end
-      end
-
-      # Напоминание за 2 часа до игры (если включено)
-      if Config.final_reminder_notification
-        if today_games.any?
+        # Напоминание за два часа до игры (если включено)
+        if Config.final_reminder_notification && today_games.any?
           today_games.each do |game|
             # Парсим время игры
             game_hour, game_min = game[:time].split(':').map(&:to_i)
 
-            # Проверяем, остался ли до игры 2 часа
+            # Проверяем, остался ли до игры два часа
             hours_before = game_hour - current_hour
-            if hours_before == 2 && game_min == 0 # Если игра в XX:00 и сейчас (XX-1):00
+            if hours_before == 2 && now.min < 5 # Если игра в XX:00 и сейчас начало часа (XX-2):00-XX-2:05
               log(:info, "Отправляем напоминание за два часа до игры в #{game[:time]}")
               send_notifications_for_game(game, "сегодня", "скорое")
             end
           end
         end
-      end
-
-      # Уведомление за день до игры в 18:00
-      if current_hour == evening_hour
-        if tomorrow_games.any?
-          log(:info, "Отправляем уведомление в общий чат о завтрашних играх")
-          tomorrow_games.each do |game|
-           send_general_chat_notification(game, "завтра")
-          end
-        end
-      end
-
-      # Уведомление в день игры в 13:00
-      if current_hour == afternoon_hour
-        if today_games.any?
-          log(:info, "Отправляем уведомление в общий чат о сегодняшних играх")
-          today_games.each do |game|
-            send_general_chat_notification(game, "сегодня")
-          end
-        end
+      rescue StandardError => e
+        log(:error, "Ошибка при проверке уведомлений: #{e.message}\n#{e.backtrace.join("\n")}")
       end
     end
 
@@ -368,6 +480,22 @@ module SheetFormatterBot
       slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
       slots_without_trainer_available = slots_without_trainer.any? { |s| s == "Свободно" }
 
+      # Определяем, все ли места заняты
+      all_slots_busy = !slots_with_trainer_available && !slots_without_trainer_available &&
+                       !slots_with_trainer.all? { |s| s == "Отменен" } &&
+                       !slots_without_trainer.all? { |s| s == "Отменен" }
+
+      # Проверяем особые случаи
+      trainer_slots_occupied = !slots_with_trainer_available && !slots_with_trainer.all? { |s| s == "Отменен" }
+      trainer_slots_cancelled = slots_with_trainer.all? { |s| s == "Отменен" }
+
+      other_slots_occupied = !slots_without_trainer_available && !slots_without_trainer.all? { |s| s == "Отменен" }
+      other_slots_cancelled = slots_without_trainer.all? { |s| s == "Отменен" }
+
+      # Проверяем оба варианта: тренер заняты/другие отменены или тренер отменены/другие заняты
+      special_case_1 = trainer_slots_occupied && other_slots_cancelled
+      special_case_2 = trainer_slots_cancelled && other_slots_occupied
+
       # Формируем текст для слотов
       slots_with_trainer_text = if slots_with_trainer.all? { |s| s == "Отменен" }
                                   "Все слоты отменены"
@@ -395,16 +523,47 @@ module SheetFormatterBot
         return
       end
 
-      message = <<~MESSAGE
-        📅 #{time_description.capitalize} игра в теннис:
-        🕒 Время: *#{game[:time]}*
-        📍 Место: *#{game[:place]}*
+      # Выбираем подходящее сообщение в зависимости от занятости слотов
+      if special_case_1 || special_case_2
+        # Особый случай: одна категория слотов занята, другая отменена
+        message = <<~MESSAGE
+          📅 #{time_description.capitalize} игра в теннис:
+          🕒 Время: *#{game[:time]}*
+          📍 Место: *#{game[:place]}*
 
-        👥 *С тренером*: #{slots_with_trainer_text}
-        👥 *Без тренера*: #{slots_without_trainer_text}
+          👥 *С тренером*: #{slots_with_trainer_text}
+          👥 *Без тренера*: #{slots_without_trainer_text}
 
-        Записаться на игру можно через бота: @#{Config.telegram_bot_username}
-      MESSAGE
+          Запись на свободные места не доступна.
+        MESSAGE
+      elsif all_slots_busy
+        # Если все места заняты, отправляем сообщение о возможности управления записью
+        message = <<~MESSAGE
+          📅 #{time_description.capitalize} игра в теннис:
+          🕒 Время: *#{game[:time]}*
+          📍 Место: *#{game[:place]}*
+
+          ℹ️ *Все места заняты!*
+
+          👥 *С тренером*: #{slots_with_trainer_text}
+          👥 *Без тренера*: #{slots_without_trainer_text}
+
+          Если вы хотите отменить свою запись или изменить статус участия,
+          воспользуйтесь ботом: @#{Config.telegram_bot_username}
+        MESSAGE
+      else
+        # Если есть свободные места, отправляем стандартное сообщение
+        message = <<~MESSAGE
+          📅 #{time_description.capitalize} игра в теннис:
+          🕒 Время: *#{game[:time]}*
+          📍 Место: *#{game[:place]}*
+
+          👥 *С тренером*: #{slots_with_trainer_text}
+          👥 *Без тренера*: #{slots_without_trainer_text}
+
+          Записаться на игру можно через бота: @#{Config.telegram_bot_username}
+        MESSAGE
+      end
 
       # Отправляем сообщение в общий чат
       begin
@@ -426,77 +585,117 @@ module SheetFormatterBot
     end
 
     def send_game_notification_to_user(user, game, time_description, notification_type)
-      log(:info, "Отправка #{notification_type} уведомления для #{user.display_name} на #{game[:date]}")
+      return false unless @bot&.bot_instance && user&.telegram_id && user&.sheet_name
 
-      # Получаем приветствие в зависимости от времени суток
-      greeting = get_greeting_by_time
+      # Проверяем текущий статус участия
+      current_status = get_user_current_attendance_status(user.sheet_name, game[:date])
 
-      # Формируем сообщение в зависимости от типа уведомления
-      message = case notification_type
-      when "дневное"
-        if time_description == "сегодня"
-          "#{greeting}! Напоминаю, что сегодня у тебя теннис в #{game[:time]} в месте \"#{game[:place]}\". Будешь участвовать?"
-        else # завтра
-          "#{greeting}! Напоминаю, что завтра у тебя теннис в #{game[:time]} в месте \"#{game[:place]}\". Планируешь прийти?"
-        end
-      when "вечернее"
-        if time_description == "сегодня"
-          "#{greeting}! Напоминаю, что сегодня вечером у тебя теннис в #{game[:time]} в месте \"#{game[:place]}\". Подтверди своё участие."
-        else # завтра
-          "#{greeting}! Напоминаю, что завтра у тебя теннис в #{game[:time]} в месте \"#{game[:place]}\". Планируешь прийти?"
-        end
-      when "скорое"
-        # Для уведомления за час до игры просто напоминание, без вопроса
-        "⚠️ #{greeting}! Напоминаю, что теннис начнётся через час, в #{game[:time]} в месте \"#{game[:place]}\"."
-      else
-        "#{greeting}! #{time_description.capitalize} у тебя теннис в #{game[:time]} в месте \"#{game[:place]}\". Ты придёшь?"
+      # Если пользователь уже отказался и это повторное уведомление, пропускаем отправку
+      if current_status == "no" && notification_type != :final_reminder && current_status
+        log(:info, "Пропуск повторного уведомления для #{user.display_name}: пользователь уже отказался")
+        return false
       end
 
-      # В зависимости от типа уведомления, выбираем - с кнопками или без
-      if notification_type == "скорое"
-        # Для уведомлений за час - без кнопок для ответа
+      # Устанавливаем флаг повторного уведомления
+      is_reminder = current_status.nil? ? false : true
+
+      # Определяем текст сообщения в зависимости от типа и статуса
+      if notification_type == :final_reminder
+        # Для финального напоминания за два часа до игры используем другой текст
+        message = <<~MESSAGE
+          ⏰ *НАПОМИНАНИЕ*: Через час теннис!
+
+          📅 Дата: *#{game[:date]}*
+          🕒 Время: *#{game[:time]}*
+          📍 Место: *#{game[:place]}*
+        MESSAGE
+
         begin
+          # Отправляем сообщение без кнопок для ответа
           @bot.bot_instance.api.send_message(
             chat_id: user.telegram_id,
-            text: message
+            text: message,
+            parse_mode: "Markdown"
           )
-          log(:info, "Уведомление за час успешно отправлено для #{user.display_name}")
-        rescue Telegram::Bot::Exceptions::ResponseError => e
-          log(:error, "Ошибка при отправке уведомления за час для #{user.display_name}: #{e.message}")
+          return true
+        rescue StandardError => e
+          log(:error, "Ошибка при отправке уведомления за два часа для #{user.display_name}: #{e.message}")
         end
       else
         # Для остальных уведомлений - с кнопками для ответа
-        # Создаем клавиатуру с кнопками да/нет/не уверен
-        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
-          inline_keyboard: [
-            [
-              Telegram::Bot::Types::InlineKeyboardButton.new(
-                text: '✅ Да',
-                callback_data: "attendance:yes:#{game[:date]}"
-              ),
-              Telegram::Bot::Types::InlineKeyboardButton.new(
-                text: '❌ Нет',
-                callback_data: "attendance:no:#{game[:date]}"
-              ),
-              Telegram::Bot::Types::InlineKeyboardButton.new(
-                text: '🤔 Не уверен',
-                callback_data: "attendance:maybe:#{game[:date]}"
-              )
+        if is_reminder
+          # Для повторного уведомления - кнопки Да/Нет с особой обработкой для "Нет"
+          keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+            inline_keyboard: [
+              [
+                Telegram::Bot::Types::InlineKeyboardButton.new(
+                  text: '✅ Да',
+                  callback_data: "attendance:yes:#{game[:date]}"
+                ),
+                Telegram::Bot::Types::InlineKeyboardButton.new(
+                  text: '❌ Нет',
+                  # Добавляем специальный суффикс для обозначения повторного нажатия "нет"
+                  callback_data: "attendance:no_reask:#{game[:date]}"
+                )
+              ]
             ]
-          ]
-        )
+          )
+
+          message = <<~MESSAGE
+            🎾 *НАПОМИНАНИЕ О ТЕННИСЕ* #{time_description}
+
+            📅 Дата: *#{game[:date]}*
+            🕒 Время: *#{game[:time]}*
+            📍 Место: *#{game[:place]}*
+
+            Подтверждаете статус?
+          MESSAGE
+        else
+          # Для первого уведомления - стандартные три кнопки
+          keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+            inline_keyboard: [
+              [
+                Telegram::Bot::Types::InlineKeyboardButton.new(
+                  text: '✅ Да',
+                  callback_data: "attendance:yes:#{game[:date]}"
+                ),
+                Telegram::Bot::Types::InlineKeyboardButton.new(
+                  text: '❌ Нет',
+                  callback_data: "attendance:no:#{game[:date]}"
+                ),
+                Telegram::Bot::Types::InlineKeyboardButton.new(
+                  text: '🤔 Не уверен',
+                  callback_data: "attendance:maybe:#{game[:date]}"
+                )
+              ]
+            ]
+          )
+
+          message = <<~MESSAGE
+            🎾 *ПРИГЛАШЕНИЕ НА ТЕННИС* #{time_description}
+
+            📅 Дата: *#{game[:date]}*
+            🕒 Время: *#{game[:time]}*
+            📍 Место: *#{game[:place]}*
+
+            Планируете ли вы прийти?
+          MESSAGE
+        end
 
         begin
           @bot.bot_instance.api.send_message(
             chat_id: user.telegram_id,
             text: message,
+            parse_mode: "Markdown",
             reply_markup: keyboard
           )
-          log(:info, "Уведомление с кнопками успешно отправлено для #{user.display_name}")
-        rescue Telegram::Bot::Exceptions::ResponseError => e
+          return true
+        rescue StandardError => e
           log(:error, "Ошибка при отправке уведомления для #{user.display_name}: #{e.message}")
         end
       end
+
+      false
     end
 
     def get_greeting_by_time

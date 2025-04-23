@@ -43,6 +43,12 @@ module SheetFormatterBot
         "/start - Регистрация в боте и показ справки"
       )
 
+      register(
+        %r{^/show_menu$}i,
+        :handle_show_menu,
+        "/show_menu - Показать главное меню бота"
+      )
+
       # --- Команды для управления сопоставлением имен ---
       register(
         %r{^/map\s+(\S+)\s+(@\S+|\S+@\S+|\d+)$}i,

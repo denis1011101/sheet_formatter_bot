@@ -64,6 +64,10 @@ module SheetFormatterBot
       ENV.fetch('GENERAL_CHAT_ID', nil)&.to_i
     end
 
+    def telegram_bot_username
+      ENV.fetch('TELEGRAM_BOT_USERNAME', nil)&.strip
+    end
+
     private
 
     def fetch_env(key)

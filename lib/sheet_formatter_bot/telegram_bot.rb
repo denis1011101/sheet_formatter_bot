@@ -37,6 +37,21 @@ module SheetFormatterBot
         Telegram::Bot::Client.run(token) do |bot|
           @bot_instance = bot # Сохраняем экземпляр клиента API
 
+          begin
+            commands = [
+              # { command: "/start", description: "Регистрация в боте и показ справки" },
+              # { command: "/show_menu", description: "Показать главное меню бота" },
+              # { command: "/myname", description: "Указать свое имя в таблице" },
+              # { command: "/mappings", description: "Показать текущие сопоставления имен" },
+              # { command: "/test", description: "Отправить тестовое уведомление" }
+            ]
+
+            bot.api.set_my_commands(commands: commands)
+            log(:info, "Команды бота настроены успешно")
+          rescue => e
+            log(:error, "Ошибка при настройке команд бота: #{e.message}")
+          end
+
           # Инициализируем планировщик уведомлений
           @notification_scheduler = NotificationScheduler.new(bot: self, sheets_formatter: sheets_formatter)
           @notification_scheduler.start
@@ -73,6 +88,102 @@ module SheetFormatterBot
         # Процесс не существует
         false
       end
+    end
+
+    def handle_show_menu(message, _captures)
+      # Получаем информацию о пользователе
+      user_id = message.from.id
+      user = @user_registry.find_by_telegram_id(user_id)
+
+      # Если пользователь не зарегистрирован, запускаем процедуру регистрации
+      unless user
+        return handle_start(message, [])
+      end
+
+      # Отображаем главное меню
+      show_main_menu(message.chat.id)
+    end
+
+    def handle_name_mapping(message, captures)
+      sheet_name = captures[0].strip # Очищаем от пробелов
+      user_identifier = captures[1]
+
+      # Определяем telegram_id пользователя
+      target_user = nil
+
+      if user_identifier.start_with?("@")
+        # Ищем по @username
+        username = user_identifier[1..]
+        target_user = @user_registry.find_by_telegram_username(username)
+      elsif user_identifier.include?("@")
+        # Это email, игнорируем
+        send_message(message.chat.id,
+                     "⚠️ Использование email не поддерживается. Используйте @username или ID пользователя.")
+        return
+      else
+        # Считаем, что это ID
+        telegram_id = user_identifier.to_i
+        target_user = @user_registry.find_by_telegram_id(telegram_id)
+      end
+
+      unless target_user
+        send_message(message.chat.id,
+                     "⚠️ Пользователь не найден. Убедитесь, что он зарегистрирован в боте с помощью команды /start.")
+        return
+      end
+
+      # Сохраняем сопоставление
+      @user_registry.map_sheet_name_to_user(sheet_name, target_user.telegram_id)
+
+      send_message(
+        message.chat.id,
+        "✅ Успешно! Имя `#{sheet_name}` в таблице теперь сопоставлено с пользователем #{target_user.display_name}"
+      )
+
+      # Создаем резервную копию после изменения данных
+      @user_registry.create_backup
+    end
+
+    def handle_set_sheet_name(message, captures)
+      # Очищаем имя от лишних пробелов
+      sheet_name = captures[0].strip
+
+      user = @user_registry.find_by_telegram_id(message.from.id)
+
+      unless user
+        # Автоматически регистрируем пользователя, если он еще не зарегистрирован
+        user = User.from_telegram_user(message.from)
+        @user_registry.register_user(user)
+      end
+
+      # Сохраняем имя пользователя в таблице
+      @user_registry.map_sheet_name_to_user(sheet_name, user.telegram_id)
+
+      send_message(
+        message.chat.id,
+        "✅ Успешно! Ваше имя в таблице теперь установлено как `#{sheet_name}`"
+      )
+
+      # Создаем резервную копию после изменения данных
+      @user_registry.create_backup
+    end
+
+    def handle_show_mappings(message, _captures)
+      # Получаем всех пользователей с установленными именами в таблице
+      users_with_sheet_names = @user_registry.all_users.select { |u| u.sheet_name }
+
+      if users_with_sheet_names.empty?
+        send_message(message.chat.id, "Нет сохраненных сопоставлений имен.")
+        return
+      end
+
+      # Формируем сообщение со списком сопоставлений
+      mappings_message = "Текущие Список имён имен:\n\n"
+      users_with_sheet_names.each do |user|
+        mappings_message += "`#{user.sheet_name}` -> #{user.username ? "@#{user.username}" : user.full_name} (ID: #{user.telegram_id})\n"
+      end
+
+      send_message(message.chat.id, mappings_message)
     end
 
     def handle_sync_registry(message, _captures)
@@ -126,77 +237,6 @@ module SheetFormatterBot
       @user_registry.create_backup
     end
 
-    private
-
-    def start_backup_thread
-      @backup_thread = Thread.new do
-        while true
-          begin
-            sleep(3600) # Делаем резервную копию каждый час
-            @user_registry.create_backup
-            log(:info, "Создана резервная копия данных пользователей и сопоставлений")
-          rescue StandardError => e
-            log(:error, "Ошибка при создании резервной копии: #{e.message}")
-          end
-        end
-      end
-    end
-
-    def listen(bot)
-      bot.listen do |message|
-        case message
-        when Telegram::Bot::Types::Message
-          # Обрабатываем только текстовые сообщения
-          next unless message.text
-
-          log_incoming(message)
-
-          begin
-            # Сначала проверяем, находится ли пользователь в процессе регистрации
-            text_handled = handle_text_message(message)
-
-            # Если сообщение не обработано как текст в рамках состояния, проверяем команду
-            unless text_handled
-              command_found = CommandParser.dispatch(message, self)
-              handle_unknown_command(message) unless command_found
-            end
-          rescue StandardError => e
-            # Ловим ошибки, возникшие при обработке сообщения
-            log(:error,
-                "Ошибка обработки сообщения #{message.message_id} от #{message.from.id}: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
-            send_error_message(message.chat.id, "Произошла внутренняя ошибка при обработке вашего запроса.")
-          end
-
-        when Telegram::Bot::Types::CallbackQuery
-          # Обрабатываем колбэки от inline-кнопок
-          log(:info, "Получен callback: #{message.data} от пользователя #{message.from.id}")
-
-          begin
-            if message.data.start_with?("attendance:")
-              @notification_scheduler.handle_attendance_callback(message)
-            elsif message.data.start_with?("book:")
-              handle_booking_callback(message)
-            elsif message.data.start_with?("menu:")
-              handle_menu_callback(message)
-            elsif message.data.start_with?("admin:")
-              handle_admin_callback(message)
-            else
-              log(:warn, "Неизвестный тип callback: #{message.data}")
-            end
-          rescue StandardError => e
-            log(:error, "Ошибка обработки callback #{message.id} от #{message.from.id}: #{e.message}")
-
-            # Отправляем уведомление о проблеме
-            bot.api.answer_callback_query(
-              callback_query_id: message.id,
-              text: "Произошла ошибка при обработке вашего действия."
-            )
-          end
-        end
-      end
-    end
-
-    # --- Обработчики команд (вызываются из CommandParser) ---
     def handle_start(message, _captures)
       # Получаем информацию о пользователе
       user_id = message.from.id
@@ -284,6 +324,172 @@ module SheetFormatterBot
 
         # Переводим пользователя в режим ожидания имени
         @user_states[user_id] = { state: :awaiting_name }
+      end
+    end
+
+    def handle_test_notification(message, _captures)
+      user_id = message.from.id
+      user = @user_registry.find_by_telegram_id(user_id)
+
+      # Проверяем, что пользователь зарегистрирован
+      unless user
+        # Автоматически регистрируем пользователя, если он еще не зарегистрирован
+        user = User.from_telegram_user(message.from)
+        @user_registry.register_user(user)
+      end
+
+      # Если у пользователя не указано имя в таблице, предлагаем указать
+      unless user.sheet_name
+        send_message(
+          message.chat.id,
+          "⚠️ Сначала укажите своё имя в таблице с помощью команды `/myname <Имя_в_таблице>`"
+        )
+        return
+      end
+
+      # Отправляем тестовое уведомление
+      today_str = Date.today.strftime("%d.%m.%Y")
+
+      if @notification_scheduler.send_test_notification(user, today_str)
+        send_message(message.chat.id, "✅ Тестовое уведомление успешно отправлено!")
+      else
+        send_message(message.chat.id, "❌ Не удалось отправить тестовое уведомление. Возможно, вы заблокировали бота?")
+      end
+    end
+
+    def handle_cancel_court(message, captures)
+      # Только администраторы могут использовать эту команду
+      admin_ids = Config.admin_telegram_ids
+      unless admin_ids.include?(message.from.id)
+        send_message(message.chat.id, "⛔ Только администратор может выполнять эту команду.")
+        return
+      end
+
+      date_str = captures[0] # формат DD.MM.YYYY
+      court_num = captures[1].to_i # номер корта (1-8)
+
+      # Проверяем корректность номера корта
+      unless (1..8).include?(court_num)
+        send_message(message.chat.id, "❌ Некорректный номер корта. Должен быть от 1 до 8.")
+        return
+      end
+
+      # Преобразуем номер корта в индекс столбца
+      # Корты 1-4 - с тренером (колонки 3-6), корты 5-8 - без тренера (колонки 7-10)
+      column_index = court_num <= 4 ? court_num + 2 : court_num + 2
+
+      # Получаем данные таблицы
+      spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+
+      # Ищем строку с нужной датой
+      row_index = nil
+      spreadsheet_data.each_with_index do |row, idx|
+        next unless row[0] == date_str
+        row_index = idx
+        break
+      end
+
+      unless row_index
+        send_message(message.chat.id, "❌ Дата не найдена в таблице.")
+        return
+      end
+
+      # Получаем букву колонки для A1 нотации
+      col_letter = (column_index + 'A'.ord).chr
+      cell_a1 = "#{col_letter}#{row_index + 1}"
+
+      # Устанавливаем "отмена" в выбранную ячейку
+      if update_cell_value(Config.default_sheet_name, cell_a1, "отмена")
+        # Применяем красный цвет текста
+        @sheets_formatter.apply_format(Config.default_sheet_name, cell_a1, :text_color, "red")
+
+        send_message(
+          message.chat.id,
+          "✅ Корт #{court_num} на дату #{date_str} отмечен как отмененный."
+        )
+
+        # Также можно отправить уведомление в общий чат
+        if Config.general_chat_id
+          send_message(
+            Config.general_chat_id,
+            "⚠️ *ОТМЕНА КОРТА*\nКорт #{court_num} на дату #{date_str} отменен."
+          )
+        end
+      else
+        send_message(
+          message.chat.id,
+          "❌ Произошла ошибка при отметке корта как отмененного."
+        )
+      end
+    end
+
+    private
+
+    def start_backup_thread
+      @backup_thread = Thread.new do
+        while true
+          begin
+            sleep(3600) # Делаем резервную копию каждый час
+            @user_registry.create_backup
+            log(:info, "Создана резервная копия данных пользователей и сопоставлений")
+          rescue StandardError => e
+            log(:error, "Ошибка при создании резервной копии: #{e.message}")
+          end
+        end
+      end
+    end
+
+    def listen(bot)
+      bot.listen do |message|
+        case message
+        when Telegram::Bot::Types::Message
+          # Обрабатываем только текстовые сообщения
+          next unless message.text
+
+          log_incoming(message)
+
+          begin
+            # Сначала проверяем, находится ли пользователь в процессе регистрации
+            text_handled = handle_text_message(message)
+
+            # Если сообщение не обработано как текст в рамках состояния, проверяем команду
+            unless text_handled
+              command_found = CommandParser.dispatch(message, self)
+              handle_unknown_command(message) unless command_found
+            end
+          rescue StandardError => e
+            # Ловим ошибки, возникшие при обработке сообщения
+            log(:error,
+                "Ошибка обработки сообщения #{message.message_id} от #{message.from.id}: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
+            send_error_message(message.chat.id, "Произошла внутренняя ошибка при обработке вашего запроса.")
+          end
+
+        when Telegram::Bot::Types::CallbackQuery
+          # Обрабатываем колбэки от inline-кнопок
+          log(:info, "Получен callback: #{message.data} от пользователя #{message.from.id}")
+
+          begin
+            if message.data.start_with?("attendance:")
+              @notification_scheduler.handle_attendance_callback(message)
+            elsif message.data.start_with?("book:")
+              handle_booking_callback(message)
+            elsif message.data.start_with?("menu:")
+              handle_menu_callback(message)
+            elsif message.data.start_with?("admin:")
+              handle_admin_callback(message)
+            else
+              log(:warn, "Неизвестный тип callback: #{message.data}")
+            end
+          rescue StandardError => e
+            log(:error, "Ошибка обработки callback #{message.id} от #{message.from.id}: #{e.message}")
+
+            # Отправляем уведомление о проблеме
+            bot.api.answer_callback_query(
+              callback_query_id: message.id,
+              text: "Произошла ошибка при обработке вашего действия."
+            )
+          end
+        end
       end
     end
 
@@ -402,6 +608,9 @@ module SheetFormatterBot
           chat_id,
           "Введите имя в таблице для сопоставления:"
         )
+      when "back"
+        answer_callback_query(callback_query.id)
+        show_main_menu(chat_id)
       end
     end
 
@@ -754,46 +963,6 @@ module SheetFormatterBot
       @user_registry.create_backup
     end
 
-    def handle_name_mapping(message, captures)
-      sheet_name = captures[0].strip # Очищаем от пробелов
-      user_identifier = captures[1]
-
-      # Определяем telegram_id пользователя
-      target_user = nil
-
-      if user_identifier.start_with?("@")
-        # Ищем по @username
-        username = user_identifier[1..]
-        target_user = @user_registry.find_by_telegram_username(username)
-      elsif user_identifier.include?("@")
-        # Это email, игнорируем
-        send_message(message.chat.id,
-                     "⚠️ Использование email не поддерживается. Используйте @username или ID пользователя.")
-        return
-      else
-        # Считаем, что это ID
-        telegram_id = user_identifier.to_i
-        target_user = @user_registry.find_by_telegram_id(telegram_id)
-      end
-
-      unless target_user
-        send_message(message.chat.id,
-                     "⚠️ Пользователь не найден. Убедитесь, что он зарегистрирован в боте с помощью команды /start.")
-        return
-      end
-
-      # Сохраняем сопоставление
-      @user_registry.map_sheet_name_to_user(sheet_name, target_user.telegram_id)
-
-      send_message(
-        message.chat.id,
-        "✅ Успешно! Имя `#{sheet_name}` в таблице теперь сопоставлено с пользователем #{target_user.display_name}"
-      )
-
-      # Создаем резервную копию после изменения данных
-      @user_registry.create_backup
-    end
-
     def handle_name_input(message, name)
       user_id = message.from.id
 
@@ -930,72 +1099,6 @@ module SheetFormatterBot
         end
       else
         send_message(chat_id, "К сожалению, все слоты заняты или отменены.")
-      end
-    end
-
-    def handle_cancel_court(message, captures)
-      # Только администраторы могут использовать эту команду
-      admin_ids = Config.admin_telegram_ids
-      unless admin_ids.include?(message.from.id)
-        send_message(message.chat.id, "⛔ Только администратор может выполнять эту команду.")
-        return
-      end
-
-      date_str = captures[0] # формат DD.MM.YYYY
-      court_num = captures[1].to_i # номер корта (1-8)
-
-      # Проверяем корректность номера корта
-      unless (1..8).include?(court_num)
-        send_message(message.chat.id, "❌ Некорректный номер корта. Должен быть от 1 до 8.")
-        return
-      end
-
-      # Преобразуем номер корта в индекс столбца
-      # Корты 1-4 - с тренером (колонки 3-6), корты 5-8 - без тренера (колонки 7-10)
-      column_index = court_num <= 4 ? court_num + 2 : court_num + 2
-
-      # Получаем данные таблицы
-      spreadsheet_data = @sheets_formatter.get_spreadsheet_data
-
-      # Ищем строку с нужной датой
-      row_index = nil
-      spreadsheet_data.each_with_index do |row, idx|
-        next unless row[0] == date_str
-        row_index = idx
-        break
-      end
-
-      unless row_index
-        send_message(message.chat.id, "❌ Дата не найдена в таблице.")
-        return
-      end
-
-      # Получаем букву колонки для A1 нотации
-      col_letter = (column_index + 'A'.ord).chr
-      cell_a1 = "#{col_letter}#{row_index + 1}"
-
-      # Устанавливаем "отмена" в выбранную ячейку
-      if update_cell_value(Config.default_sheet_name, cell_a1, "отмена")
-        # Применяем красный цвет текста
-        @sheets_formatter.apply_format(Config.default_sheet_name, cell_a1, :text_color, "red")
-
-        send_message(
-          message.chat.id,
-          "✅ Корт #{court_num} на дату #{date_str} отмечен как отмененный."
-        )
-
-        # Также можно отправить уведомление в общий чат
-        if Config.general_chat_id
-          send_message(
-            Config.general_chat_id,
-            "⚠️ *ОТМЕНА КОРТА*\nКорт #{court_num} на дату #{date_str} отменен."
-          )
-        end
-      else
-        send_message(
-          message.chat.id,
-          "❌ Произошла ошибка при отметке корта как отмененного."
-        )
       end
     end
 
@@ -1193,80 +1296,8 @@ module SheetFormatterBot
       show_available_slots(message.chat.id)
     end
 
-    def handle_set_sheet_name(message, captures)
-      # Очищаем имя от лишних пробелов
-      sheet_name = captures[0].strip
-
-      user = @user_registry.find_by_telegram_id(message.from.id)
-
-      unless user
-        # Автоматически регистрируем пользователя, если он еще не зарегистрирован
-        user = User.from_telegram_user(message.from)
-        @user_registry.register_user(user)
-      end
-
-      # Сохраняем имя пользователя в таблице
-      @user_registry.map_sheet_name_to_user(sheet_name, user.telegram_id)
-
-      send_message(
-        message.chat.id,
-        "✅ Успешно! Ваше имя в таблице теперь установлено как `#{sheet_name}`"
-      )
-
-      # Создаем резервную копию после изменения данных
-      @user_registry.create_backup
-    end
-
-    def handle_show_mappings(message, _captures)
-      # Получаем всех пользователей с установленными именами в таблице
-      users_with_sheet_names = @user_registry.all_users.select { |u| u.sheet_name }
-
-      if users_with_sheet_names.empty?
-        send_message(message.chat.id, "Нет сохраненных сопоставлений имен.")
-        return
-      end
-
-      # Формируем сообщение со списком сопоставлений
-      mappings_message = "Текущие Список имён имен:\n\n"
-      users_with_sheet_names.each do |user|
-        mappings_message += "`#{user.sheet_name}` -> #{user.username ? "@#{user.username}" : user.full_name} (ID: #{user.telegram_id})\n"
-      end
-
-      send_message(message.chat.id, mappings_message)
-    end
-
     def handle_unknown_command(message)
       show_main_menu(message.chat.id, "Неизвестная команда или неверный формат. Выберите действие из меню:")
-    end
-
-    def handle_test_notification(message, _captures)
-      user_id = message.from.id
-      user = @user_registry.find_by_telegram_id(user_id)
-
-      # Проверяем, что пользователь зарегистрирован
-      unless user
-        # Автоматически регистрируем пользователя, если он еще не зарегистрирован
-        user = User.from_telegram_user(message.from)
-        @user_registry.register_user(user)
-      end
-
-      # Если у пользователя не указано имя в таблице, предлагаем указать
-      unless user.sheet_name
-        send_message(
-          message.chat.id,
-          "⚠️ Сначала укажите своё имя в таблице с помощью команды `/myname <Имя_в_таблице>`"
-        )
-        return
-      end
-
-      # Отправляем тестовое уведомление
-      today_str = Date.today.strftime("%d.%m.%Y")
-
-      if @notification_scheduler.send_test_notification(user, today_str)
-        send_message(message.chat.id, "✅ Тестовое уведомление успешно отправлено!")
-      else
-        send_message(message.chat.id, "❌ Не удалось отправить тестовое уведомление. Возможно, вы заблокировали бота?")
-      end
     end
 
     # --- Вспомогательные методы ---
