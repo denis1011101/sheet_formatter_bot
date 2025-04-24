@@ -99,6 +99,16 @@ module SheetFormatterBot
       data = callback_query.data
       _, response, date_str = data.split(':')
 
+      # Проверяем, это подтверждение существующего статуса по префиксу
+      is_explicit_confirmation = response.start_with?('confirm_')
+
+      # Если это подтверждение, убираем префикс для дальнейшей обработки
+      if is_explicit_confirmation
+        orig_response = response
+        response = response.sub('confirm_', '')
+        log(:info, "Получено подтверждение статуса: #{orig_response} -> #{response}")
+      end
+
       # Специальная обработка для "no_reask" - когда пользователь отвечает "Нет" на повторное уведомление
       if response == "no_reask"
         # Отправляем новое сообщение с тремя кнопками
@@ -181,37 +191,64 @@ module SheetFormatterBot
 
       # Получаем предыдущий статус
       previous_status = get_user_current_attendance_status(sheet_name, date_str)
-      is_changing = previous_status.nil? ? false : (previous_status != response)
 
-      # Обновляем цвет текста ячейки в таблице
-      color = case response
-              when 'yes' then 'green'
-              when 'no' then 'red'
-              when 'maybe' then 'yellow'
-              end
+      # ВАЖНАЯ ЧАСТЬ: Если это явное подтверждение или совпадение текущего/нового статуса - считаем это подтверждением
+      is_confirmation = is_explicit_confirmation || (previous_status == response)
+      is_changing = !is_confirmation && previous_status != nil
 
-      log(:info, "Имя в таблице: '#{sheet_name}', поиск ячейки для обновления...")
+      log(:info, "Обработка ответа от #{user.display_name}: response=#{response}, previous=#{previous_status}, is_explicit_confirmation=#{is_explicit_confirmation}, is_confirmation=#{is_confirmation}")
 
-      if update_attendance_in_sheet(date_str, sheet_name, color)
-        # Отправляем подтверждение
-        message = case response
-                  when 'yes'
-                    if is_changing && previous_status
-                      "✅ Вы изменили свой ответ на 'Да'. Будем ждать вас на игре!"
-                    else
-                      "✅ Отлично! Ваш ответ 'Да' зарегистрирован."
+      # Если это подтверждение - не обновляем таблицу
+      should_update_sheet = !is_confirmation
+
+      # Только если нужно обновить таблицу - получаем цвет и обновляем
+      if should_update_sheet
+        # Обновляем цвет текста ячейки в таблице
+        color = case response
+                when 'yes' then 'green'
+                when 'no' then 'red'
+                when 'maybe' then 'yellow'
+                end
+
+        log(:info, "Имя в таблице: '#{sheet_name}', поиск ячейки для обновления статуса на #{color}...")
+        update_successful = update_attendance_in_sheet(date_str, sheet_name, color)
+      else
+        # Если это подтверждение - считаем операцию успешной без изменения таблицы
+        log(:info, "Пользователь #{user.display_name} подтвердил текущий статус '#{response}' - таблица не обновляется")
+        update_successful = true
+      end
+
+      # Отправляем подтверждение
+      if update_successful || is_confirmation
+        message = if is_confirmation
+                    case response
+                    when 'yes'
+                      "✅ Спасибо за подтверждение! Ждём вас на игре."
+                    when 'no'
+                      "❌ Вы подтвердили свой отказ от участия."
+                    when 'maybe'
+                      "🤔 Вы подтвердили свой статус 'Не уверен'."
                     end
-                  when 'no'
-                    if is_changing && previous_status
-                      "❌ Вы изменили свой ответ на 'Нет'. Жаль, что не сможете прийти."
-                    else
-                      "❌ Жаль! Ваш ответ 'Нет' зарегистрирован."
-                    end
-                  when 'maybe'
-                    if is_changing && previous_status
-                      "🤔 Вы изменили свой ответ на 'Не уверен'. Надеемся на положительное решение!"
-                    else
-                      "🤔 Понятно. Ваш ответ 'Не уверен' зарегистрирован."
+                  else
+                    case response
+                    when 'yes'
+                      if is_changing && previous_status
+                        "✅ Вы изменили свой ответ на 'Да'. Будем ждать вас на игре!"
+                      else
+                        "✅ Отлично! Ваш ответ 'Да' зарегистрирован."
+                      end
+                    when 'no'
+                      if is_changing && previous_status
+                        "❌ Вы изменили свой ответ на 'Нет'. Жаль, что не сможете прийти."
+                      else
+                        "❌ Жаль! Ваш ответ 'Нет' зарегистрирован."
+                      end
+                    when 'maybe'
+                      if is_changing && previous_status
+                        "🤔 Вы изменили свой ответ на 'Не уверен'. Надеемся на положительное решение!"
+                      else
+                        "🤔 Понятно. Ваш ответ 'Не уверен' зарегистрирован."
+                      end
                     end
                   end
 
@@ -460,64 +497,40 @@ module SheetFormatterBot
         return
       end
 
-        # Получаем полную строку данных из таблицы
-        full_row_data = nil
-        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
-        spreadsheet_data.each do |row|
-          if row[0] == game[:date]
-            full_row_data = row
-            break
-          end
-        end
+      # Получаем полную строку данных из таблицы
+      full_row_data = nil
+      row_idx = nil
+      spreadsheet_data = @sheets_formatter.get_spreadsheet_data
 
-        return unless full_row_data
+      spreadsheet_data.each_with_index do |row, idx|
+        if row[0] == game[:date]
+          full_row_data = row
+          row_idx = idx + 1 # +1 потому что индексация в A1 нотации начинается с 1
+          break
+        end
+      end
+
+      return unless full_row_data
+
+      log(:info, "Найдена строка для даты #{game[:date]}, индекс строки: #{row_idx}")
 
       # Формируем сообщение
       slots_with_trainer = []
       slots_without_trainer = []
 
       # Анализируем слоты с тренером (колонки 3-6)
-      for i in 3..6
-        slot_name = full_row_data[i]
-        # Проверяем, не является ли слот отмененным
-        if slot_name && slot_name.strip.downcase == "отмена"
-          slots_with_trainer << "Отменен"
-        else
-          slots_with_trainer << (slot_name.nil? || slot_name.strip.empty? ? "Свободно" : slot_name.strip)
-        end
-      end
+      process_slots(full_row_data, 3..6, slots_with_trainer, row_idx)
 
       # Анализируем слоты без тренера (колонки 7-10)
-      for i in 7..10
-        slot_name = full_row_data[i]
-        # Проверяем, не является ли слот отмененным
-        if slot_name && slot_name.strip.downcase == "отмена"
-          slots_without_trainer << "Отменен"
-        else
-          slots_without_trainer << (slot_name.nil? || slot_name.strip.empty? ? "Свободно" : slot_name.strip)
-        end
-      end
+      process_slots(full_row_data, 7..10, slots_without_trainer, row_idx)
 
       # Проверяем, есть ли доступные слоты (не отмененные и не занятые)
       slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
       slots_without_trainer_available = slots_without_trainer.any? { |s| s == "Свободно" }
 
       # Формируем текст для слотов, всегда показывая детальную информацию
-      slots_with_trainer_text = if slots_with_trainer.all? { |s| s == "Отменен" }
-                                  "Все слоты отменены"
-                                else
-                                  slots_with_trainer.map.with_index do |slot, idx|
-                                    slot == "Отменен" ? "#{idx + 1}. 🚫 Отменен" : (slot == "Свободно" ? "#{idx + 1}. ⚪ Свободно" : "#{idx + 1}. ✅ #{slot}")
-                                  end.join(", ")
-                                end
-
-      slots_without_trainer_text = if slots_without_trainer.all? { |s| s == "Отменен" }
-                                     "Все слоты отменены"
-                                   else
-                                     slots_without_trainer.map.with_index do |slot, idx|
-                                       slot == "Отменен" ? "#{idx + 1}. 🚫 Отменен" : (slot == "Свободно" ? "#{idx + 1}. ⚪ Свободно" : "#{idx + 1}. ✅ #{slot}")
-                                     end.join(", ")
-                                   end
+      slots_with_trainer_text = format_slots_text(slots_with_trainer)
+      slots_without_trainer_text = format_slots_text(slots_without_trainer)
 
       # Если все слоты отменены в обоих секциях, можно пропустить уведомление
       if slots_with_trainer.all? { |s| s == "Отменен" } && slots_without_trainer.all? { |s| s == "Отменен" }
@@ -527,8 +540,8 @@ module SheetFormatterBot
 
       # Определяем, все ли места заняты
       all_slots_busy = !slots_with_trainer_available && !slots_without_trainer_available &&
-                       !slots_with_trainer.all? { |s| s == "Отменен" } &&
-                       !slots_without_trainer.all? { |s| s == "Отменен" }
+                      !slots_with_trainer.all? { |s| s == "Отменен" } &&
+                      !slots_without_trainer.all? { |s| s == "Отменен" }
 
       # Формируем сообщение
       message = <<~MESSAGE
@@ -536,11 +549,16 @@ module SheetFormatterBot
         🕒 Время: *#{game[:time]}*
         📍 Место: *#{game[:place]}*
 
-        👥 *С тренером*: #{slots_with_trainer_text}
-        👥 *Без тренера*: #{slots_without_trainer_text}
+        👥 *С тренером*:
+        #{slots_with_trainer_text}
+
+        👥 *Без тренера*:
+        #{slots_without_trainer_text}
 
         #{all_slots_busy ? "Если вы хотите отменить свою запись или изменить статус участия,\nвоспользуйтесь ботом: @#{Config.telegram_bot_username}" : "Записаться на игру можно через бота: @#{Config.telegram_bot_username}"}
       MESSAGE
+
+      log(:info, "Подготовлено сообщение для общего чата")
 
       # Отправляем сообщение в общий чат
       begin
@@ -556,6 +574,68 @@ module SheetFormatterBot
         log(:info, "Уведомление успешно отправлено в общий чат")
       rescue Telegram::Bot::Exceptions::ResponseError => e
         log(:error, "Ошибка при отправке уведомления в общий чат: #{e.message}")
+      end
+    end
+
+    # Вспомогательный метод для обработки слотов
+    def process_slots(row_data, range, slots_array, row_idx)
+      range.each do |i|
+        slot_name = row_data[i]
+
+        if slot_name.nil? || slot_name.strip.empty?
+          slots_array << "Свободно"
+          next
+        end
+
+        if slot_name.strip.downcase == "отмена"
+          slots_array << "Отменен"
+          next
+        end
+
+        # Получаем формат ячейки для определения статуса
+        col_letter = (i + 'A'.ord).chr
+        cell_a1 = "#{col_letter}#{row_idx}"
+        formats = @sheets_formatter.get_cell_formats(Config.default_sheet_name, cell_a1)
+
+        log(:debug, "Ячейка #{cell_a1}, имя: '#{slot_name}', форматы: #{formats.inspect}")
+
+        # Определяем статус по цвету текста из полученных форматов
+        status_emoji = "⚪" # По умолчанию - нет статуса
+
+        if formats && formats[:text_color]
+          case formats[:text_color]
+          when "green"
+            status_emoji = "✅" # подтвердил участие
+          when "red"
+            status_emoji = "❌" # отказался
+          when "yellow"
+            status_emoji = "🤔" # не уверен
+          end
+          log(:debug, "Статус для '#{slot_name}': #{formats[:text_color]} -> #{status_emoji}")
+        end
+
+        # Находим телеграм ник пользователя
+        user = @user_registry.find_by_name(slot_name.strip)
+        display_name = user&.username ? "@#{user.username}" : slot_name.strip
+
+        slots_array << "#{status_emoji} #{display_name}"
+      end
+    end
+
+    # Вспомогательный метод для форматирования текста слотов
+    def format_slots_text(slots)
+      if slots.all? { |s| s == "Отменен" }
+        "Все слоты отменены"
+      else
+        slots.map.with_index do |slot, idx|
+          if slot == "Отменен"
+            "#{idx + 1}. 🚫 Отменен"
+          elsif slot == "Свободно"
+            "#{idx + 1}. ⚪ Свободно"
+          else
+            "#{idx + 1}. #{slot}"
+          end
+        end.join("\n")
       end
     end
 
@@ -579,6 +659,18 @@ module SheetFormatterBot
 
       # Устанавливаем флаг повторного уведомления
       is_reminder = current_status.nil? ? false : true
+
+      # Определяем текстовое представление текущего статуса
+      status_text = case current_status
+                    when "yes"
+                      "✅ Да (вы подтвердили участие)"
+                    when "no"
+                      "❌ Нет (вы отказались)"
+                    when "maybe"
+                      "🤔 Не уверен"
+                    else
+                      "⚪ Не указан"
+                    end
 
       # Определяем текст сообщения в зависимости от типа и статуса
       if notification_type == :final_reminder
@@ -605,13 +697,24 @@ module SheetFormatterBot
       else
         # Для остальных уведомлений - с кнопками для ответа
         if is_reminder
-          # Для повторного уведомления - кнопки Да/Нет с особой обработкой для "Нет"
+          # Для повторного уведомления используем специальное значение callback_data
+          # в зависимости от текущего статуса пользователя
+          if current_status == "yes"
+            yes_callback = "attendance:confirm_yes:#{game[:date]}"
+          elsif current_status == "no"
+            yes_callback = "attendance:confirm_no:#{game[:date]}"
+          elsif current_status == "maybe"
+            yes_callback = "attendance:confirm_maybe:#{game[:date]}"
+          else
+            yes_callback = "attendance:yes:#{game[:date]}"
+          end
+
           keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
             inline_keyboard: [
               [
                 Telegram::Bot::Types::InlineKeyboardButton.new(
                   text: '✅ Да',
-                  callback_data: "attendance:yes:#{game[:date]}"
+                  callback_data: yes_callback  # Вот здесь используем переменную yes_callback
                 ),
                 Telegram::Bot::Types::InlineKeyboardButton.new(
                   text: '❌ Нет',
@@ -629,6 +732,7 @@ module SheetFormatterBot
             🕒 Время: *#{game[:time]}*
             📍 Место: *#{game[:place]}*
 
+            Ваш текущий статус: #{status_text}
             Подтверждаете статус?
           MESSAGE
         else
@@ -659,6 +763,7 @@ module SheetFormatterBot
             🕒 Время: *#{game[:time]}*
             📍 Место: *#{game[:place]}*
 
+            #{current_status ? "Ваш текущий статус: #{status_text}" : ""}
             Планируете ли вы прийти?
           MESSAGE
         end

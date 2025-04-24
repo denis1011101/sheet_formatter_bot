@@ -69,12 +69,19 @@ module SheetFormatterBot
         # Получаем цвет текста, если он установлен
         if format.text_format && format.text_format.foreground_color
           color = format.text_format.foreground_color
-          if color.red == 1 && color.green < 0.3 && color.blue < 0.3
+
+          # Более надежное определение цветов по диапазону значений
+          if color.red.to_f > 0.7 && color.green.to_f < 0.3 && color.blue.to_f < 0.3
             formats[:text_color] = "red"
-          elsif color.green == 1 && color.red < 0.3 && color.blue < 0.3
+            log(:debug, "Обнаружен красный текст в #{cell_a1}: #{color.inspect}")
+          elsif color.green.to_f > 0.3 && color.red.to_f < 0.3 && color.blue.to_f < 0.3
             formats[:text_color] = "green"
-          elsif color.red == 1 && color.green == 1 && color.blue < 0.3
+            log(:debug, "Обнаружен зеленый текст в #{cell_a1}: #{color.inspect}")
+          elsif color.red.to_f > 0.7 && color.green.to_f > 0.3 && color.blue.to_f < 0.3
             formats[:text_color] = "yellow"
+            log(:debug, "Обнаружен желтый текст в #{cell_a1}: #{color.inspect}")
+          else
+            log(:debug, "Не удалось распознать цвет текста в #{cell_a1}: #{color.inspect}")
           end
         end
 
