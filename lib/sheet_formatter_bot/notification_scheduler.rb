@@ -543,6 +543,8 @@ module SheetFormatterBot
                       !slots_with_trainer.all? { |s| s == "Отменен" } &&
                       !slots_without_trainer.all? { |s| s == "Отменен" }
 
+      safe_username = escape_markdown(Config.telegram_bot_username)
+
       # Формируем сообщение
       message = <<~MESSAGE
         📅 #{time_description.capitalize} игра в теннис:
@@ -555,7 +557,7 @@ module SheetFormatterBot
         👥 *Без тренера*:
         #{slots_without_trainer_text}
 
-        #{all_slots_busy ? "Если вы хотите отменить свою запись или изменить статус участия,\nвоспользуйтесь ботом: @#{Config.telegram_bot_username}" : "Записаться на игру можно через бота: @#{Config.telegram_bot_username}"}
+        #{all_slots_busy ? "Если вы хотите отменить свою запись или изменить статус участия,\nвоспользуйтесь ботом: @#{safe_username}" : "Записаться на игру можно через бота: @#{safe_username}"}
       MESSAGE
 
       log(:info, "Подготовлено сообщение для общего чата")
@@ -575,6 +577,12 @@ module SheetFormatterBot
       rescue Telegram::Bot::Exceptions::ResponseError => e
         log(:error, "Ошибка при отправке уведомления в общий чат: #{e.message}")
       end
+    end
+
+    def escape_markdown(text)
+      return "" if text.nil?
+      # Экранируем символы Markdown: * _ [ ] ( ) ~ ` > # + - = | { } . !
+      text.to_s.gsub(/([_*\[\]()~`>#+\-=|{}.!])/, '\\\\\\1')
     end
 
     # Вспомогательный метод для обработки слотов

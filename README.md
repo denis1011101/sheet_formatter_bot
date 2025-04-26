@@ -38,9 +38,9 @@ nohup bundle exec bin/sheet_formatter_bot > "bot_$(date '+%Y-%m-%d_%H-%M-%S').lo
 
 Для остановки бота, запущенного в фоновом режиме:
 ```bash
-ps aux | grep sheet_formatter_bot
+ps -ef | grep -v grep | grep sheet_formatter_bot
 
-kill [PID]
+kill -9 [PID]
 ```
 Где [PID] - идентификатор процесса, который был выведен при запуске.
 

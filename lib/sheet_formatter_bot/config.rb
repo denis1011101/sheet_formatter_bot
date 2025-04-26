@@ -65,7 +65,29 @@ module SheetFormatterBot
     end
 
     def telegram_bot_username
-      ENV.fetch('TELEGRAM_BOT_USERNAME', nil)&.strip
+      @telegram_bot_username ||= begin
+        require 'net/http'
+        require 'json'
+
+        # Получаем информацию о боте через API Telegram
+        uri = URI("https://api.telegram.org/bot#{telegram_token}/getMe")
+        response = Net::HTTP.get_response(uri)
+
+        if response.is_a?(Net::HTTPSuccess)
+          data = JSON.parse(response.body)
+          if data['ok'] && data['result'] && data['result']['username']
+            data['result']['username']
+          else
+            ENV.fetch('TELEGRAM_BOT_USERNAME', nil)&.strip
+          end
+        else
+          # Если API недоступен, используем значение из переменной окружения как запасной вариант
+          ENV.fetch('TELEGRAM_BOT_USERNAME', nil)&.strip
+        end
+      rescue => e
+        # В случае ошибки используем значение из переменной окружения
+        ENV.fetch('TELEGRAM_BOT_USERNAME', nil)&.strip
+      end
     end
 
     private
