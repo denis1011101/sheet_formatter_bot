@@ -6,7 +6,8 @@ module SheetFormatterBot
     attr_reader :token, :sheets_formatter, :bot_instance, :user_registry
     attr_accessor :notification_scheduler
 
-    def initialize(token: Config.telegram_token, sheets_formatter: SheetsFormatter.new, user_registry: nil, notification_scheduler: nil)
+    def initialize(token: Config.telegram_token, sheets_formatter: SheetsFormatter.new, user_registry: nil,
+                   notification_scheduler: nil)
       @token = token
       @sheets_formatter = sheets_formatter
       @bot_instance = nil # Инициализируется в run
@@ -17,7 +18,7 @@ module SheetFormatterBot
     end
 
     def run
-      lock_file = File.join(Dir.pwd, '.bot_running.lock')
+      lock_file = File.join(Dir.pwd, ".bot_running.lock")
 
       if File.exist?(lock_file)
         if process_still_running?(lock_file)
@@ -43,12 +44,12 @@ module SheetFormatterBot
               # { command: "/show_menu", description: "Показать главное меню бота" },
               # { command: "/myname", description: "Указать свое имя в таблице" },
               # { command: "/mappings", description: "Показать текущие сопоставления имен" },
-              # { command: "/test", description: "Отправить тестовое уведомление" }
+              # { command: "/test", description: "Отправить Изменить свой статус" }
             ]
 
             bot.api.set_my_commands(commands: commands)
             log(:info, "Команды бота настроены успешно")
-          rescue => e
+          rescue StandardError => e
             log(:error, "Ошибка при настройке команд бота: #{e.message}")
           end
 
@@ -80,14 +81,12 @@ module SheetFormatterBot
     end
 
     def process_still_running?(lock_file)
-      begin
-        pid = File.read(lock_file).to_i
-        Process.getpgid(pid)  # Проверяем, существует ли процесс
-        true
-      rescue Errno::ESRCH
-        # Процесс не существует
-        false
-      end
+      pid = File.read(lock_file).to_i
+      Process.getpgid(pid) # Проверяем, существует ли процесс
+      true
+    rescue Errno::ESRCH
+      # Процесс не существует
+      false
     end
 
     def handle_show_menu(message, _captures)
@@ -96,9 +95,7 @@ module SheetFormatterBot
       user = @user_registry.find_by_telegram_id(user_id)
 
       # Если пользователь не зарегистрирован, запускаем процедуру регистрации
-      unless user
-        return handle_start(message, [])
-      end
+      return handle_start(message, []) unless user
 
       # Отображаем главное меню
       show_main_menu(message.chat.id)
@@ -193,7 +190,7 @@ module SheetFormatterBot
       admin_ids = Config.admin_telegram_ids
 
       # Если список пуст, используем ID пользователя, который инициализировал бота
-      admin_ids = [85611094] if admin_ids.empty?
+      admin_ids = [85_611_094] if admin_ids.empty?
 
       unless admin_ids.include?(message.from.id)
         send_message(message.chat.id, "⛔ Только администратор может выполнять эту команду.")
@@ -300,7 +297,7 @@ module SheetFormatterBot
             ],
             [
               Telegram::Bot::Types::InlineKeyboardButton.new(
-                text: "🧪 Тестовое уведомление",
+                text: "🧪 Изменить свой статус",
                 callback_data: "menu:test_notification"
               )
             ]
@@ -347,13 +344,13 @@ module SheetFormatterBot
         return
       end
 
-      # Отправляем тестовое уведомление
+      # Отправляем Изменить свой статус
       today_str = Date.today.strftime("%d.%m.%Y")
 
       if @notification_scheduler.send_test_notification(user, today_str)
-        send_message(message.chat.id, "✅ Тестовое уведомление успешно отправлено!")
+        send_message(message.chat.id, "✅ Изменить свой статус успешно отправлено!")
       else
-        send_message(message.chat.id, "❌ Не удалось отправить тестовое уведомление. Возможно, вы заблокировали бота?")
+        send_message(message.chat.id, "❌ Не удалось отправить Изменить свой статус. Возможно, вы заблокировали бота?")
       end
     end
 
@@ -385,6 +382,7 @@ module SheetFormatterBot
       row_index = nil
       spreadsheet_data.each_with_index do |row, idx|
         next unless row[0] == date_str
+
         row_index = idx
         break
       end
@@ -395,7 +393,7 @@ module SheetFormatterBot
       end
 
       # Получаем букву колонки для A1 нотации
-      col_letter = (column_index + 'A'.ord).chr
+      col_letter = (column_index + "A".ord).chr
       cell_a1 = "#{col_letter}#{row_index + 1}"
 
       # Устанавливаем "отмена" в выбранную ячейку
@@ -698,10 +696,10 @@ module SheetFormatterBot
         send_message(chat_id, mappings_message, reply_markup: keyboard)
 
       when "test_notification"
-        # Отправляем тестовое уведомление
+        # Отправляем Изменить свой статус
         @bot_instance.api.answer_callback_query(
           callback_query_id: callback_query.id,
-          text: "Отправляю тестовое уведомление..."
+          text: "Отправляю Изменить свой статус..."
         )
 
         unless user && user.sheet_name
@@ -709,12 +707,12 @@ module SheetFormatterBot
           return
         end
 
-        # Отправляем тестовое уведомление
+        # Отправляем Изменить свой статус
         today_str = Date.today.strftime("%d.%m.%Y")
         if @notification_scheduler.send_test_notification(user, today_str)
-          send_message(chat_id, "✅ Тестовое уведомление успешно отправлено!")
+          send_message(chat_id, "✅ Изменить свой статус успешно отправлено!")
         else
-          send_message(chat_id, "❌ Не удалось отправить тестовое уведомление. Возможно, вы заблокировали бота?")
+          send_message(chat_id, "❌ Не удалось отправить Изменить свой статус. Возможно, вы заблокировали бота?")
         end
 
       when "admin"
@@ -768,7 +766,7 @@ module SheetFormatterBot
             ],
             [
               Telegram::Bot::Types::InlineKeyboardButton.new(
-                text: "🧪 Тестовое уведомление",
+                text: "🧪 Изменить свой статус",
                 callback_data: "menu:test_notification"
               )
             ]
@@ -919,7 +917,7 @@ module SheetFormatterBot
         ],
         [
           Telegram::Bot::Types::InlineKeyboardButton.new(
-            text: "🧪 Тестовое уведомление",
+            text: "🧪 Изменить свой статус",
             callback_data: "menu:test_notification"
           )
         ]
@@ -1061,16 +1059,16 @@ module SheetFormatterBot
       message = "👥 *#{header}*:\n"
 
       slots.each_with_index do |slot, idx|
-        if slot[:name]
-          # Проверяем, является ли слот отмененным
-          if slot[:name].downcase == "отмена"
-            message += "#{idx + 1}. 🚫 _Отменен_ ❌\n"
-          else
-            message += "#{idx + 1}. #{slot[:name]} ✅\n"
-          end
-        else
-          message += "#{idx + 1}. _Свободно_ ⚪\n"
-        end
+        message += if slot[:name]
+                     # Проверяем, является ли слот отмененным
+                     if slot[:name].downcase == "отмена"
+                       "#{idx + 1}. 🚫 _Отменен_ ❌\n"
+                     else
+                       "#{idx + 1}. #{slot[:name]} ✅\n"
+                     end
+                   else
+                     "#{idx + 1}. _Свободно_ ⚪\n"
+                   end
       end
 
       send_message(chat_id, message)
@@ -1218,7 +1216,7 @@ module SheetFormatterBot
               ],
               [
                 Telegram::Bot::Types::InlineKeyboardButton.new(
-                  text: "🧪 Тестовое уведомление",
+                  text: "🧪 Изменить свой статус",
                   callback_data: "menu:test_notification"
                 )
               ]
@@ -1230,7 +1228,7 @@ module SheetFormatterBot
             message_id: callback_query.message.message_id,
             text: success_message,
             parse_mode: "Markdown",
-            reply_markup: keyboard  # Добавляем клавиатуру
+            reply_markup: keyboard # Добавляем клавиатуру
           )
 
           @sheets_formatter.apply_format(Config.default_sheet_name, cell_a1, :text_color, "green")

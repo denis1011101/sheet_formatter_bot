@@ -85,7 +85,7 @@ module SheetFormatterBot
       register(
         %r{^/test$}i,
         :handle_test_notification,
-        "/test - Отправить тестовое уведомление"
+        "/test - Отправить Изменить свой статус"
       )
     end
 
