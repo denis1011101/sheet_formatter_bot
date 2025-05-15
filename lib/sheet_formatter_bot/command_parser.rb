@@ -14,6 +14,14 @@ module SheetFormatterBot
       text = message.text&.strip
       return if text.nil? || text.empty?
 
+      # Проверка типа чата
+      chat_type = message.chat.type
+      # Если сообщение из группового чата и не начинается с команды, игнорируем
+      if ['group', 'supergroup'].include?(chat_type) && !text.start_with?('/')
+        log(:info, "Игнорируем сообщение '#{text}' в групповом чате")
+        return false
+      end
+
       COMMANDS.each do |cmd|
         match = text.match(cmd.pattern)
         next unless match

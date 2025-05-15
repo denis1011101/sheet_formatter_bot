@@ -58,8 +58,8 @@ module SheetFormatterBot
         spreadsheet_data.each_with_index do |row, row_idx|
           next unless row[0] == date_str  # Ищем только в строке с нужной датой
 
-          # Проверяем ячейки в диапазоне, где могут быть имена игроков (колонки 3-10)
-          (3..10).each do |col_idx|
+          # Проверяем ячейки в диапазоне, где могут быть имена игроков (колонки 3-15)
+          (3..15).each do |col_idx|
             cell = row[col_idx].to_s
 
             # Сравниваем с учетом возможных пробелов в конце
@@ -437,8 +437,8 @@ module SheetFormatterBot
         time = row[1] || @tennis_time
         place = row[2] || "обычное место"
 
-        # Получаем всех игроков (колонки 3-10)
-        players = row[3..10].compact.reject(&:empty?)
+        # Получаем всех игроков (колонки 3-15)
+        players = row[3..15].compact.reject(&:empty?)
 
         games << {
           date: date_str,
@@ -521,8 +521,8 @@ module SheetFormatterBot
       # Анализируем слоты с тренером (колонки 3-6)
       process_slots(full_row_data, 3..6, slots_with_trainer, row_idx)
 
-      # Анализируем слоты без тренера (колонки 7-10)
-      process_slots(full_row_data, 7..10, slots_without_trainer, row_idx)
+      # Анализируем слоты без тренера (колонки 7-14)
+      process_slots(full_row_data, 7..14, slots_without_trainer, row_idx)
 
       # Проверяем, есть ли доступные слоты (не отмененные и не занятые)
       slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
@@ -846,9 +846,9 @@ module SheetFormatterBot
 
         return [] unless today_row
 
-        # Получаем всех игроков (непустые ячейки из столбцов 3-10)
-        # Столбцы: 0=дата, 1=время, 2=место, 3-6=с тренером, 7-10=без тренера
-        players = today_row[3..10].compact.reject(&:empty?)
+        # Получаем всех игроков (непустые ячейки из столбцов 3-15)
+        # Столбцы: 0=дата, 1=время, 2=место, 3-6=с тренером, 7-15=без тренера
+        players = today_row[3..15].compact.reject(&:empty?)
 
         return players
       rescue StandardError => e

@@ -32,40 +32,62 @@ module SheetFormatterBot
       # Записываем PID в файл блокировки
       File.write(lock_file, Process.pid)
 
+      # Максимальное количество попыток подключения
+      max_retries = 3
+      retry_count = 0
+
       begin
         log(:info, "Запуск Telegram бота...")
-        Telegram::Bot::Client.run(token) do |bot|
-          @bot_instance = bot # Сохраняем экземпляр клиента API
 
-          begin
-            commands = [
-              # { command: "/start", description: "Регистрация в боте и показ справки" },
-              # { command: "/show_menu", description: "Показать главное меню бота" },
-              # { command: "/myname", description: "Указать свое имя в таблице" },
-              # { command: "/mappings", description: "Показать текущие сопоставления имен" },
-              # { command: "/test", description: "Отправить тестовое уведомление" }
-            ]
+        begin
+          # Попытка подключения к Telegram API
+          Telegram::Bot::Client.run(token) do |bot|
+            @bot_instance = bot # Сохраняем экземпляр клиента API
 
-            bot.api.set_my_commands(commands: commands)
-            log(:info, "Команды бота настроены успешно")
-          rescue => e
-            log(:error, "Ошибка при настройке команд бота: #{e.message}")
+            begin
+              # Настройка команд бота
+              commands = [
+                # { command: "/start", description: "Регистрация в боте и показ справки" },
+                # { command: "/show_menu", description: "Показать главное меню бота" },
+                # { command: "/myname", description: "Указать свое имя в таблице" },
+                # { command: "/mappings", description: "Показать текущие сопоставления имен" },
+                # { command: "/test", description: "Отправить тестовое уведомление" }
+              ]
+
+              bot.api.set_my_commands(commands: commands)
+              log(:info, "Команды бота настроены успешно")
+            rescue => e
+              log(:error, "Ошибка при настройке команд бота: #{e.message}")
+            end
+
+            # Инициализируем планировщик уведомлений
+            @notification_scheduler = NotificationScheduler.new(bot: self, sheets_formatter: sheets_formatter)
+            @notification_scheduler.start
+
+            # Запускаем отдельный поток для периодического резервного копирования данных
+            start_backup_thread
+
+            log(:info, "Бот успешно подключился к Telegram. Планировщик уведомлений запущен.")
+            listen(bot)
           end
+        rescue Telegram::Bot::Exceptions::ResponseError => e
+          # Обработка 429 ошибки с повторными попытками
+          if e.error_code == 429 && retry_count < max_retries
+            # Получаем время ожидания из ошибки
+            retry_after = e.response && e.response.respond_to?(:parameters) ? e.response.parameters["retry_after"] : 5
+            retry_after = [retry_after.to_i, 5].max # Минимальное время ожидания 5 секунд
 
-          # Инициализируем планировщик уведомлений
-          @notification_scheduler = NotificationScheduler.new(bot: self, sheets_formatter: sheets_formatter)
-          @notification_scheduler.start
+            retry_count += 1
+            log(:warn, "Превышены лимиты Telegram API (429). Повторная попытка #{retry_count}/#{max_retries} через #{retry_after} сек.")
 
-          # Запускаем отдельный поток для периодического резервного копирования данных
-          start_backup_thread
-
-          log(:info, "Бот успешно подключился к Telegram. Планировщик уведомлений запущен.")
-          listen(bot)
+            sleep(retry_after)
+            retry # Повторяем попытку подключения
+          else
+            # Если это не 429 ошибка или превышено максимальное число попыток
+            log(:error, "Критическая ошибка Telegram API при запуске: #{e.message} (Код: #{e&.error_code}). Завершение работы.")
+            raise # Пробрасываем ошибку дальше
+          end
         end
-      rescue Telegram::Bot::Exceptions::ResponseError => e
-        log(:error,
-            "Критическая ошибка Telegram API при запуске: #{e.message} (Код: #{e.error_code}). Завершение работы.")
-        exit(1) # Выход, если не удалось подключиться
       rescue StandardError => e
         log(:error, "Критическая ошибка при запуске бота: #{e.message}\n#{e.backtrace.join("\n")}")
         exit(1)
@@ -1025,7 +1047,7 @@ module SheetFormatterBot
 
       send_message(chat_id, date_info)
 
-      # Анализируем слоты с тренером (колонки 3-6)
+      # Анализируем слоты с тренером (колонки 3-6) (индекс с нуля)
       slots_with_trainer = []
       for i in 3..6
         slot_name = next_date_row[i]
@@ -1035,9 +1057,9 @@ module SheetFormatterBot
         }
       end
 
-      # Анализируем слоты без тренера (колонки 7-10)
+      # Анализируем слоты без тренера (колонки 7-14) (индекс с нуля)
       slots_without_trainer = []
-      for i in 7..10
+      for i in 7..14
         slot_name = next_date_row[i]
         slots_without_trainer << {
           index: i,
@@ -1150,8 +1172,8 @@ module SheetFormatterBot
         existing_slot_type = nil
         existing_slot_num = nil
 
-        # Анализируем только колонки 3-10, где находятся слоты игроков
-        (3..10).each do |col_idx|
+        # Анализируем только колонки 3-14, где находятся слоты игроков
+        (3..14).each do |col_idx|
           next if col_idx == slot_index # Пропускаем текущий выбранный слот
           next if row[col_idx].nil? || row[col_idx].strip.empty? # Пропускаем пустые ячейки
 
