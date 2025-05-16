@@ -40,16 +40,32 @@ module SheetFormatterBot
       ENV.fetch('TIMEZONE', 'Asia/Yekaterinburg')
     end
 
-    def morning_notification_hour
-      ENV.fetch('MORNING_NOTIFICATION_HOUR', '9').to_i
+    def personal_morning_notification_hour
+      ENV.fetch('PERSONAL_MORNING_NOTIFICATION_HOUR', '12').to_i
     end
 
-    def evening_notification_hour
-      ENV.fetch('EVENING_NOTIFICATION_HOUR', '20').to_i
+    def personal_evening_notification_hour
+      ENV.fetch('PERSONAL_MORNING_NOTIFICATION_HOUR', '18').to_i
     end
 
-    def final_reminder_notification
-      ENV.fetch('FINAL_REMINDER_NOTIFICATION', 'true') == 'true'
+    def group_morning_notification_hour
+      ENV.fetch('GROUP_MORNING_NOTIFICATION_HOUR', '14').to_i
+    end
+
+    def group_evening_notification_hour
+      ENV.fetch('GROUP_EVENING_NOTIFICATION_HOUR', '19').to_i
+    end
+
+    def final_reminder_notification_hour
+      ENV.fetch('FINAL_REMINDER_NOTIFICATION_HOUR', '20').to_i
+    end
+
+    def self.admin_reminder_wday
+      ENV.fetch('ADMIN_REMINDER_WDAY', '5').to_i
+    end
+
+    def self.admin_reminder_hour
+      ENV.fetch('ADMIN_REMINDER_HOUR', '12').to_i
     end
 
     def admin_telegram_ids

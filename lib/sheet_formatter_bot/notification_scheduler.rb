@@ -344,10 +344,16 @@ module SheetFormatterBot
 
         # Получаем текущий час в часовом поясе пользователя
         current_hour = now.hour
+        current_minute = now.min
 
         # Определяем часы уведомлений из конфигурации
-        afternoon_hour = Config.morning_notification_hour # 13:00 (переименовано, но используем существующую переменную)
-        evening_hour = Config.evening_notification_hour   # 18:00 (уже настроено в .env)
+        personal_afternoon_hour = Config.personal_morning_notification_hour
+        personal_evening_hour = Config.personal_evening_notification_hour
+        group_afternoon_hour = Config.group_morning_notification_hour
+        group_evening_hour = Config.group_evening_notification_hour
+        final_reminder_hour = Config.final_reminder_notification_hour
+        admin_reminder_hour = Config.admin_reminder_hour
+        admin_reminder_wday = Config.admin_reminder_wday
 
         # Проверяем игры на сегодня
         today_games = find_games_for_date(spreadsheet_data, today.strftime('%d.%m.%Y'))
@@ -355,11 +361,24 @@ module SheetFormatterBot
         # Проверяем игры на завтра
         tomorrow_games = find_games_for_date(spreadsheet_data, tomorrow.strftime('%d.%m.%Y'))
 
-        # Дневное уведомление (13:00) о сегодняшних и завтрашних играх
-        if current_hour == afternoon_hour
+        admin_ids = Config.admin_telegram_ids
+        if today.wday == admin_reminder_wday && current_hour == admin_reminder_hour && !@sent_notifications["admin_friday_reminder:#{today}"]
+          admin_ids.each do |admin_id|
+            @bot.bot_instance.api.send_message(
+              chat_id: admin_id,
+              text: "⏰ Пятница! Не забудьте забронировать корт и тренера Артёма на следующую неделю.",
+              parse_mode: "Markdown"
+            )
+          end
+          @sent_notifications["admin_friday_reminder:#{today}"] = Time.now
+          log(:info, "Отправлено пятничное напоминание администраторам о бронировании корта и тренера Артёма")
+        end
+
+        # Дневное личное уведомление о сегодняшних и завтрашних играх
+        if current_hour == personal_afternoon_hour && current_minute < 5
           # Если есть игры сегодня
           if today_games.any?
-            log(:info, "Отправляем дневное напоминание об играх сегодня (всего: #{today_games.count})")
+            log(:info, "Отправляем дневное личное напоминание об играх сегодня (всего: #{today_games.count})")
             today_games.each do |game|
               send_notifications_for_game(game, "сегодня", "дневное")
             end
@@ -367,26 +386,29 @@ module SheetFormatterBot
 
           # Если есть игры завтра
           if tomorrow_games.any?
-            log(:info, "Отправляем дневное напоминание об играх завтра (всего: #{tomorrow_games.count})")
+            log(:info, "Отправляем дневное личное напоминание об играх завтра (всего: #{tomorrow_games.count})")
             tomorrow_games.each do |game|
               send_notifications_for_game(game, "завтра", "дневное")
             end
           end
+        end
 
-          # Уведомление в день игры в 13:00
+        # Дневное уведомление в общий чат
+        if current_hour == group_afternoon_hour && current_minute < 5
+          # Уведомление в день игры
           if today_games.any?
-            log(:info, "Отправляем уведомление в общий чат о сегодняшних играх")
+            log(:info, "Отправляем дневное уведомление в общий чат о сегодняшних играх")
             today_games.each do |game|
               send_general_chat_notification(game, "сегодня")
             end
           end
         end
 
-        # Вечернее уведомление (18:00) о сегодняшних и завтрашних играх
-        if current_hour == evening_hour
+        # Вечернее личное уведомление о сегодняшних и завтрашних играх
+        if current_hour == personal_evening_hour && current_minute < 5
           # Если есть игры сегодня
           if today_games.any?
-            log(:info, "Отправляем вечернее напоминание об играх сегодня (всего: #{today_games.count})")
+            log(:info, "Отправляем вечернее личное напоминание об играх сегодня (всего: #{today_games.count})")
             today_games.each do |game|
               send_notifications_for_game(game, "сегодня", "вечернее")
             end
@@ -394,33 +416,39 @@ module SheetFormatterBot
 
           # Если есть игры завтра
           if tomorrow_games.any?
-            log(:info, "Отправляем вечернее напоминание об играх завтра (всего: #{tomorrow_games.count})")
+            log(:info, "Отправляем вечернее личное напоминание об играх завтра (всего: #{tomorrow_games.count})")
             tomorrow_games.each do |game|
               send_notifications_for_game(game, "завтра", "вечернее")
             end
           end
+        end
 
-          # Уведомление за день до игры в 18:00
+        # Вечернее уведомление в общий чат
+        if current_hour == group_evening_hour && current_minute < 5
+          # Уведомление за день до игры
           if tomorrow_games.any?
-            log(:info, "Отправляем уведомление в общий чат о завтрашних играх")
+            log(:info, "Отправляем вечернее уведомление в общий чат о завтрашних играх")
             tomorrow_games.each do |game|
               send_general_chat_notification(game, "завтра")
             end
           end
         end
 
-        # Напоминание за два часа до игры (если включено)
-        if Config.final_reminder_notification && today_games.any?
-          today_games.each do |game|
-            # Парсим время игры
-            game_hour, game_min = game[:time].split(':').map(&:to_i)
+        # Финальное напоминание перед игрой в указанное время
+        if final_reminder_hour && today_games.any?
+          # Создаём уникальный ключ для проверки отправки финального напоминания
+          final_reminder_key = "final_reminder:#{today.strftime('%Y-%m-%d')}"
 
-            # Проверяем, остался ли до игры два часа
-            hours_before = game_hour - current_hour
-            if hours_before == 2 && now.min < 5 # Если игра в XX:00 и сейчас начало часа (XX-2):00-XX-2:05
-              log(:info, "Отправляем напоминание за два часа до игры в #{game[:time]}")
-              send_notifications_for_game(game, "сегодня", "скорое")
+          # Проверяем текущий час и отправлялось ли уже напоминание сегодня
+          if current_hour >= final_reminder_hour && !@sent_notifications[final_reminder_key]
+            log(:info, "Отправляем финальное напоминание об играх сегодня (всего: #{today_games.count})")
+
+            today_games.each do |game|
+              send_notifications_for_game(game, "сегодня", "финальное")
             end
+
+            # Запоминаем, что финальное напоминание отправлено
+            @sent_notifications[final_reminder_key] = Time.now
           end
         end
       rescue StandardError => e
@@ -472,8 +500,14 @@ module SheetFormatterBot
 
         user = @user_registry.find_by_name(player_name)
         if user
+          # Добавляем небольшую случайную задержку (от 0.8 до 2.5 секунды) между сообщениями
+          # чтобы избежать слишком частых запросов к Telegram API
+          sleep(rand(0.8..2.5)) if players_notified > 0
+
           send_game_notification_to_user(user, game, time_description, notification_type)
           players_notified += 1
+
+          log(:debug, "Отправлено уведомление #{players_notified}/#{game[:players].size}, сделана пауза")
         else
           log(:warn, "Telegram-пользователь для игрока не найден: #{player_name}")
         end
@@ -481,6 +515,8 @@ module SheetFormatterBot
 
       # Отмечаем, что уведомления отправлены (только если были отправлены хотя бы 1)
       @sent_notifications[notification_key] = Time.now if players_notified > 0
+
+      log(:info, "Отправка уведомлений завершена, отправлено #{players_notified} сообщений")
     end
 
     def send_general_chat_notification(game, time_description)
@@ -514,32 +550,76 @@ module SheetFormatterBot
 
       log(:info, "Найдена строка для даты #{game[:date]}, индекс строки: #{row_idx}")
 
-      # Формируем сообщение
+      # Формируем массивы для слотов
       slots_with_trainer = []
       slots_without_trainer = []
 
-      # Анализируем слоты с тренером (колонки 3-6)
+      # Анализируем слоты с тренером (колонки 3-6) (индекс с нуля)
       process_slots(full_row_data, 3..6, slots_with_trainer, row_idx)
 
-      # Анализируем слоты без тренера (колонки 7-14)
-      process_slots(full_row_data, 7..14, slots_without_trainer, row_idx)
+      # Анализируем слоты без тренера (колонки 7-10)
+      process_slots(full_row_data, 7..10, slots_without_trainer, row_idx)
 
-      # Проверяем, есть ли доступные слоты (не отмененные и не занятые)
-      slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
-      slots_without_trainer_available = slots_without_trainer.any? { |s| s == "Свободно" }
+      # Проверяем дополнительные слоты (колонки 11 и далее)
+      if full_row_data.length > 11
+        # Дополнительные слоты (после 10-й колонки)
+        (11...full_row_data.length).each do |i|
+          if full_row_data[i] && !full_row_data[i].strip.empty?
+            # Проверяем, не является ли это примечанием или служебной информацией
+            # Типично примечания содержат слова "забронировано", "корт", и т.п.
+            cell_content = full_row_data[i].strip.downcase
+            is_note = cell_content.include?("забронен") ||
+                      cell_content.include?("корт") ||
+                      cell_content.include?("примечание")
 
-      # Формируем текст для слотов, всегда показывая детальную информацию
+            unless is_note
+              # Получаем формат ячейки для определения статуса
+              col_letter = (i + 'A'.ord).chr
+              cell_a1 = "#{col_letter}#{row_idx}"
+              formats = @sheets_formatter.get_cell_formats(Config.default_sheet_name, cell_a1)
+
+              # Определяем статус по цвету текста
+              status_emoji = "⚪" # По умолчанию - нет статуса
+
+              if formats && formats[:text_color]
+                case formats[:text_color]
+                when "green"
+                  status_emoji = "✅"
+                when "red"
+                  status_emoji = "❌"
+                when "yellow"
+                  status_emoji = "🤔"
+                end
+              end
+
+              # Находим телеграм ник пользователя
+              user = @user_registry.find_by_name(full_row_data[i].strip)
+              display_name = user&.username ? "@#{user.username}" : full_row_data[i].strip
+
+              # Добавляем в список слотов без тренера
+              slots_without_trainer << "#{status_emoji} #{display_name}"
+            end
+          end
+        end
+      end
+
+      # Формируем текст для слотов
       slots_with_trainer_text = format_slots_text(slots_with_trainer)
       slots_without_trainer_text = format_slots_text(slots_without_trainer)
 
-      # Если все слоты отменены в обоих секциях, можно пропустить уведомление
-      if slots_with_trainer.all? { |s| s == "Отменен" } && slots_without_trainer.all? { |s| s == "Отменен" }
+      # Если все слоты отменены, можно пропустить уведомление
+      if slots_with_trainer.all? { |s| s == "Отменен" } &&
+         slots_without_trainer.all? { |s| s == "Отменен" }
         log(:info, "Все слоты отменены на #{game[:date]} - уведомление не отправляется")
         return
       end
 
       # Определяем, все ли места заняты
-      all_slots_busy = !slots_with_trainer_available && !slots_without_trainer_available &&
+      slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
+      slots_without_trainer_available = slots_without_trainer.any? { |s| s == "Свободно" }
+
+      all_slots_busy = !slots_with_trainer_available &&
+                      !slots_without_trainer_available &&
                       !slots_with_trainer.all? { |s| s == "Отменен" } &&
                       !slots_without_trainer.all? { |s| s == "Отменен" }
 
@@ -556,7 +636,12 @@ module SheetFormatterBot
 
         👥 *Без тренера*:
         #{slots_without_trainer_text}
+      MESSAGE
 
+      # Добавляем информацию о возможности записи
+      message += <<~MESSAGE
+
+        #{all_slots_busy ? "Все места заняты!" : "Есть свободные места!"}
         #{all_slots_busy ? "Если вы хотите отменить свою запись или изменить статус участия,\nвоспользуйтесь ботом: @#{safe_username}" : "Записаться на игру можно через бота: @#{safe_username}"}
       MESSAGE
 
@@ -572,7 +657,6 @@ module SheetFormatterBot
 
         # Запоминаем, что уведомление отправлено
         @sent_notifications[notification_key] = Time.now
-
         log(:info, "Уведомление успешно отправлено в общий чат")
       rescue Telegram::Bot::Exceptions::ResponseError => e
         log(:error, "Ошибка при отправке уведомления в общий чат: #{e.message}")
@@ -846,7 +930,7 @@ module SheetFormatterBot
 
         return [] unless today_row
 
-        # Получаем всех игроков (непустые ячейки из столбцов 3-15)
+        # Получаем всех игроков (непустые ячейки из столбцов 3-15) (индекс с нуля)
         # Столбцы: 0=дата, 1=время, 2=место, 3-6=с тренером, 7-15=без тренера
         players = today_row[3..15].compact.reject(&:empty?)
 

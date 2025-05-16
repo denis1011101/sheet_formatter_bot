@@ -13,6 +13,7 @@ module SheetFormatterBot
       'blue'   => { red: 0.0, green: 0.0, blue: 1.0 },
       'yellow' => { red: 1.0, green: 0.5, blue: 0.0 },
       'white'  => { red: 1.0, green: 1.0, blue: 1.0 },
+      'black'  => { red: 0.0, green: 0.0, blue: 0.0 },
       'none'   => nil
     }.transform_values { |v| v ? Google::Apis::SheetsV4::Color.new(**v) : nil }.freeze
 
@@ -80,9 +81,19 @@ module SheetFormatterBot
           elsif color.red.to_f > 0.7 && color.green.to_f > 0.3 && color.blue.to_f < 0.3
             formats[:text_color] = "yellow"
             log(:debug, "Обнаружен желтый текст в #{cell_a1}: #{color.inspect}")
+          elsif (color.red.to_f < 0.2 && color.green.to_f < 0.2 && color.blue.to_f < 0.2) ||
+                (color.red.nil? && color.green.nil? && color.blue.nil?)
+            formats[:text_color] = "black" # Дефолтный цвет
+            log(:debug, "Обнаружен черный (дефолтный) текст в #{cell_a1}: #{color.inspect}")
           else
-            log(:debug, "Не удалось распознать цвет текста в #{cell_a1}: #{color.inspect}")
+            # Для любых других цветов, которые не подходят под наши условия
+            formats[:text_color] = "other"
+            log(:debug, "Обнаружен нестандартный цвет текста в #{cell_a1}: r=#{color.red&.to_f}, g=#{color.green&.to_f}, b=#{color.blue&.to_f}")
           end
+        else
+          # Если foreground_color не задан, считаем что это дефолтный (черный) цвет
+          formats[:text_color] = "black"
+          log(:debug, "Цвет текста не задан в #{cell_a1}, используется дефолтный (черный)")
         end
 
         return formats

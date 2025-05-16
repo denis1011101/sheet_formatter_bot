@@ -396,7 +396,7 @@ module SheetFormatterBot
         return
       end
 
-      # Преобразуем номер корта в индекс столбца
+      # Преобразуем номер корта в индекс столбца (индекс с нуля)
       # Корты 1-4 - с тренером (колонки 3-6), корты 5-8 - без тренера (колонки 7-10)
       column_index = court_num <= 4 ? court_num + 2 : court_num + 2
 
@@ -462,55 +462,66 @@ module SheetFormatterBot
     end
 
     def listen(bot)
+      @bot_instance = bot
+      log(:info, "Начало прослушивания сообщений")
+
       bot.listen do |message|
-        case message
-        when Telegram::Bot::Types::Message
-          # Обрабатываем только текстовые сообщения
-          next unless message.text
+        log(:debug, "Получено сообщение типа: #{message.class}")
 
-          log_incoming(message)
+        begin
+          case message
+          when Telegram::Bot::Types::Message
+            # Обрабатываем только текстовые сообщения
+            next unless message.text
 
-          begin
-            # Сначала проверяем, находится ли пользователь в процессе регистрации
-            text_handled = handle_text_message(message)
+            log_incoming(message)
 
-            # Если сообщение не обработано как текст в рамках состояния, проверяем команду
-            unless text_handled
-              command_found = CommandParser.dispatch(message, self)
-              handle_unknown_command(message) unless command_found
+            begin
+              # Сначала проверяем, находится ли пользователь в процессе регистрации
+              text_handled = handle_text_message(message)
+
+              # Если сообщение не обработано как текст в рамках состояния, проверяем команду
+              unless text_handled
+                command_found = CommandParser.dispatch(message, self)
+                handle_unknown_command(message) unless command_found
+              end
+            rescue StandardError => e
+              # Ловим ошибки, возникшие при обработке сообщения
+              log(:error,
+                  "Ошибка обработки сообщения #{message.message_id} от #{message.from.id}: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
+              send_error_message(message.chat.id, "Произошла внутренняя ошибка при обработке вашего запроса.")
             end
-          rescue StandardError => e
-            # Ловим ошибки, возникшие при обработке сообщения
-            log(:error,
-                "Ошибка обработки сообщения #{message.message_id} от #{message.from.id}: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
-            send_error_message(message.chat.id, "Произошла внутренняя ошибка при обработке вашего запроса.")
-          end
 
-        when Telegram::Bot::Types::CallbackQuery
-          # Обрабатываем колбэки от inline-кнопок
-          log(:info, "Получен callback: #{message.data} от пользователя #{message.from.id}")
+          when Telegram::Bot::Types::CallbackQuery
+            # Обрабатываем колбэки от inline-кнопок
+            log(:info, "Получен callback: #{message.data} от пользователя #{message.from.id}")
 
-          begin
-            if message.data.start_with?("attendance:")
-              @notification_scheduler.handle_attendance_callback(message)
-            elsif message.data.start_with?("book:")
-              handle_booking_callback(message)
-            elsif message.data.start_with?("menu:")
-              handle_menu_callback(message)
-            elsif message.data.start_with?("admin:")
-              handle_admin_callback(message)
-            else
-              log(:warn, "Неизвестный тип callback: #{message.data}")
+            begin
+              if message.data.start_with?("attendance:")
+                @notification_scheduler.handle_attendance_callback(message)
+              elsif message.data.start_with?("book:")
+                handle_booking_callback(message)
+              elsif message.data.start_with?("menu:")
+                handle_menu_callback(message)
+              elsif message.data.start_with?("admin:")
+                handle_admin_callback(message)
+              elsif message.data.start_with?("change_status:")
+                handle_change_status_callback(message)
+              else
+                log(:warn, "Неизвестный тип callback: #{message.data}")
+              end
+            rescue StandardError => e
+              log(:error, "Ошибка обработки callback #{message.id} от #{message.from.id}: #{e.message}")
+
+              # Отправляем уведомление о проблеме
+              bot.api.answer_callback_query(
+                callback_query_id: message.id,
+                text: "Произошла ошибка при обработке вашего действия."
+              )
             end
-          rescue StandardError => e
-            log(:error, "Ошибка обработки callback #{message.id} от #{message.from.id}: #{e.message}")
-
-            # Отправляем уведомление о проблеме
-            bot.api.answer_callback_query(
-              callback_query_id: message.id,
-              text: "Произошла ошибка при обработке вашего действия."
-            )
           end
+        rescue StandardError => e
+          log(:error, "Критическая ошибка при обработке сообщения: #{e.message}\n#{e.backtrace.join("\n")}")
         end
       end
     end
@@ -567,16 +578,105 @@ module SheetFormatterBot
     end
 
     def handle_admin_callback(callback_query)
-      action = callback_query.data.split(":")[1]
       user_id = callback_query.from.id
       chat_id = callback_query.message.chat.id
-
       admin_ids = Config.admin_telegram_ids
       unless admin_ids.include?(user_id)
         answer_callback_query(callback_query.id, "У вас нет прав администратора.", true)
         return
       end
 
+      data = callback_query.data
+
+      # Кнопка "Отменить корт" — показываем ближайшие даты
+      if data == "admin:cancel"
+        answer_callback_query(callback_query.id)
+        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+        today = Date.today
+        dates = spreadsheet_data.map { |row| row[0] }
+                               .select { |d| d =~ /\d{2}\.\d{2}\.\d{4}/ }
+                               .uniq
+                               .select do |d|
+                                 begin
+                                   Date.strptime(d, "%d.%m.%Y") >= today
+                                 rescue
+                                   false
+                                 end
+                               end
+                               .first(7)
+
+        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+          inline_keyboard: dates.map { |d|
+            [Telegram::Bot::Types::InlineKeyboardButton.new(text: d, callback_data: "admin:cancel_date:#{d}")]
+          } + [
+            [Telegram::Bot::Types::InlineKeyboardButton.new(text: "❌ Отмена", callback_data: "admin:cancel_exit")]
+          ]
+        )
+        send_message(chat_id, "Выберите дату для отмены корта:", reply_markup: keyboard)
+        return
+      end
+
+      # Кнопка "Отмена" — выход в админ-меню
+      if data == "admin:cancel_exit"
+        answer_callback_query(callback_query.id)
+        show_admin_menu(chat_id)
+        return
+      end
+
+      # Выбор даты — показываем варианты отмены
+      if data =~ /^admin:cancel_date:(\d{2}\.\d{2}\.\d{4})$/
+        date_str = $1
+        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+          inline_keyboard: [
+            [
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: "Отменить все 4 слота с тренером",
+                callback_data: "admin:cancel_slots:with_trainer:#{date_str}"
+              ),
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: "Отменить все 4 слота без тренера",
+                callback_data: "admin:cancel_slots:without_trainer:#{date_str}"
+              )
+            ],
+            [
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: "❌ Отмена",
+                callback_data: "admin:cancel_exit"
+              )
+            ]
+          ]
+        )
+        send_message(chat_id, "Выберите какие слоты отменить на дату #{date_str}:", reply_markup: keyboard)
+        return
+      end
+
+      # Отмена слотов — отмечаем все 4 слота как "отмена"
+      if data =~ /^admin:cancel_slots:(with_trainer|without_trainer):(\d{2}\.\d{2}\.\d{4})$/
+        type, date_str = $1, $2
+        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+        row_index = spreadsheet_data.find_index { |row| row[0] == date_str }
+        if row_index.nil?
+          send_message(chat_id, "❌ Дата не найдена в таблице.")
+          return
+        end
+
+        col_range = type == "with_trainer" ? (3..6) : (7..10)
+        sheet_name = Config.default_sheet_name
+
+        col_range.each do |col_idx|
+          col_letter = (col_idx + 'A'.ord).chr
+          cell_a1 = "#{col_letter}#{row_index + 1}"
+          update_cell_value(sheet_name, cell_a1, "отмена")
+          @sheets_formatter.apply_format(sheet_name, cell_a1, :text_color, "red")
+        end
+
+        send_message(chat_id, "✅ Все 4 слота #{type == 'with_trainer' ? 'с тренером' : 'без тренера'} на дату #{date_str} отмечены как отменённые.")
+        show_admin_menu(chat_id)
+        return
+      end
+
+      # Остальные действия (например, sync, map, back) оставьте как есть:
+      action = callback_query.data.split(":")[1]
       case action
       when "sync"
         answer_callback_query(callback_query.id, "Выполняю синхронизацию...")
@@ -608,28 +708,13 @@ module SheetFormatterBot
         end
 
         send_message(chat_id, report)
-
         @user_registry.create_backup
-
-      when "cancel"
-        answer_callback_query(callback_query.id)
-
-        @user_states[user_id] = { state: :awaiting_cancel_date }
-
-        send_message(
-          chat_id,
-          "Введите дату в формате ДД.ММ.ГГГГ (например, 01.05.2023):"
-        )
 
       when "map"
         answer_callback_query(callback_query.id)
-
         @user_states[user_id] = { state: :awaiting_map_name }
+        send_message(chat_id, "Введите имя в таблице для сопоставления:")
 
-        send_message(
-          chat_id,
-          "Введите имя в таблице для сопоставления:"
-        )
       when "back"
         answer_callback_query(callback_query.id)
         show_main_menu(chat_id)
@@ -670,6 +755,30 @@ module SheetFormatterBot
 
         # Показываем доступные слоты
         show_available_slots(chat_id)
+
+      when "change_status"
+        # Быстрый ответ на нажатие кнопки
+        @bot_instance.api.answer_callback_query(
+          callback_query_id: callback_query.id,
+          text: "Поиск ближайших игр..."
+        )
+
+        # Проверяем, что у пользователя указано имя
+        unless user && user.sheet_name
+          send_message(chat_id, "⚠️ Сначала укажите своё имя с помощью кнопки 'Изменить имя'")
+          return
+        end
+
+        # Получаем информацию о ближайших играх пользователя
+        upcoming_games = find_upcoming_games_for_user(user)
+
+        if upcoming_games.empty?
+          send_message(chat_id, "📋 У вас нет запланированных игр на ближайшие дни.")
+          return
+        end
+
+        # Если есть игры, создаем кнопки для изменения статуса
+        show_status_change_options(chat_id, upcoming_games)
 
       when "change_name"
         # Переводим пользователя в состояние изменения имени
@@ -812,6 +921,213 @@ module SheetFormatterBot
       end
     end
 
+    # Обрабатывает callback для изменения статуса
+    def handle_change_status_callback(callback_query)
+      _, date_str, current_status = callback_query.data.split(":")
+      user_id = callback_query.from.id
+      chat_id = callback_query.message.chat.id
+      user = @user_registry.find_by_telegram_id(user_id)
+
+      # Находим информацию о выбранной игре
+      game = find_game_by_date(date_str)
+
+      unless game
+        @bot_instance.api.answer_callback_query(
+          callback_query_id: callback_query.id,
+          text: "Ошибка: информация о игре не найдена",
+          show_alert: true
+        )
+        return
+      end
+
+      # Показываем кнопки для изменения статуса
+      show_status_buttons_for_game(chat_id, game.merge(status: current_status))
+    end
+
+    # Находит информацию о игре по дате
+    def find_game_by_date(date_str)
+      spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+
+      spreadsheet_data.each do |row|
+        next unless row[0] == date_str
+
+        return {
+          date: date_str,
+          time: row[1] || Config.tennis_default_time,
+          place: row[2] || "обычное место"
+        }
+      end
+
+      nil
+    end
+
+    # Находит ближайшие игры для пользователя (сегодня и завтра)
+    def find_upcoming_games_for_user(user)
+      return [] unless user && user.sheet_name
+
+      today = Date.today.strftime('%d.%m.%Y')
+      tomorrow = (Date.today + 1).strftime('%d.%m.%Y')
+
+      upcoming_games = []
+
+      # Получаем данные из таблицы
+      spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+
+      # Проверяем игры на сегодня и завтра
+      [today, tomorrow].each do |date_str|
+        spreadsheet_data.each do |row|
+          next unless row[0] == date_str
+
+          # Проверяем все ячейки, где могут быть записаны игроки (колонки 3-15)
+          user_found = false
+          row_data = {}
+
+          (3..15).each do |i|
+            next if row[i].nil? || row[i].strip.empty?
+
+            if row[i].strip == user.sheet_name
+              user_found = true
+
+              # Получаем статус участия
+              col_letter = (i + 'A'.ord).chr
+              row_index = spreadsheet_data.index(row) + 1
+              cell_a1 = "#{col_letter}#{row_index}"
+
+              formats = @sheets_formatter.get_cell_formats(Config.default_sheet_name, cell_a1)
+              status = "unknown"
+
+              if formats && formats[:text_color]
+                status = case formats[:text_color]
+                        when "green" then "yes"
+                        when "red" then "no"
+                        when "yellow" then "maybe"
+                        else "unknown"
+                        end
+              end
+
+              row_data = {
+                date: date_str,
+                time: row[1] || Config.tennis_default_time,
+                place: row[2] || "обычное место",
+                status: status
+              }
+
+              break
+            end
+          end
+
+          upcoming_games << row_data if user_found
+        end
+      end
+
+      upcoming_games
+    end
+
+    # Показывает варианты изменения статуса для ближайших игр
+    def show_status_change_options(chat_id, games)
+      # Если игра только одна, сразу показываем кнопки для изменения статуса
+      if games.size == 1
+        show_status_buttons_for_game(chat_id, games[0])
+        return
+      end
+
+      # Если несколько игр, даем выбрать какую игру изменить
+      message = "📋 *Ваши ближайшие игры:*\n\n"
+
+      games.each_with_index do |game, index|
+        status_emoji = case game[:status]
+                      when "yes" then "✅"
+                      when "no" then "❌"
+                      when "maybe" then "🤔"
+                      else "⚪"
+                      end
+
+        message += "#{index + 1}. #{status_emoji} *#{game[:date]}* в #{game[:time]}\n"
+      end
+
+      message += "\nВыберите игру для изменения статуса:"
+
+      # Создаем кнопки для выбора игры
+      keyboard_buttons = games.map.with_index do |game, index|
+        [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "Игра #{index + 1}: #{game[:date]}",
+            callback_data: "change_status:#{game[:date]}:#{game[:status]}"
+          )
+        ]
+      end
+
+      # Добавляем кнопку "Назад"
+      keyboard_buttons << [
+        Telegram::Bot::Types::InlineKeyboardButton.new(
+          text: "« Назад к меню",
+          callback_data: "menu:back"
+        )
+      ]
+
+      keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+        inline_keyboard: keyboard_buttons
+      )
+
+      send_message(chat_id, message, reply_markup: keyboard)
+    end
+
+    # Показывает кнопки для изменения статуса конкретной игры
+    def show_status_buttons_for_game(chat_id, game)
+      date_str = game[:date]
+      current_status = game[:status]
+
+      message = <<~MESSAGE
+        📋 *Изменение статуса участия*
+
+        📅 Дата: *#{date_str}*
+        🕒 Время: *#{game[:time]}*
+        📍 Место: *#{game[:place]}*
+
+        Текущий статус: #{status_text(current_status)}
+
+        Выберите новый статус участия:
+      MESSAGE
+
+      # Создаем клавиатуру с кнопками для изменения статуса
+      keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+        inline_keyboard: [
+          [
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: '✅ Да',
+              callback_data: "attendance:yes:#{date_str}"
+            ),
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: '❌ Нет',
+              callback_data: "attendance:no:#{date_str}"
+            ),
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: '🤔 Не уверен',
+              callback_data: "attendance:maybe:#{date_str}"
+            )
+          ],
+          [
+            Telegram::Bot::Types::InlineKeyboardButton.new(
+              text: "« Назад к меню",
+              callback_data: "menu:back"
+            )
+          ]
+        ]
+      )
+
+      send_message(chat_id, message, reply_markup: keyboard)
+    end
+
+    # Форматирует текстовое представление статуса
+    def status_text(status)
+      case status
+      when "yes" then "✅ Вы подтвердили участие"
+      when "no" then "❌ Вы отказались от участия"
+      when "maybe" then "🤔 Вы не уверены в участии"
+      else "⚪ Статус не указан"
+      end
+    end
+
     def handle_text_message(message)
       user_id = message.from.id
       text = message.text
@@ -929,6 +1245,12 @@ module SheetFormatterBot
         ],
         [
           Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "📋 Изменить статус",
+            callback_data: "menu:change_status"
+          )
+        ],
+        [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
             text: "📝 Изменить имя",
             callback_data: "menu:change_name"
           )
@@ -1004,7 +1326,6 @@ module SheetFormatterBot
 
     def show_available_slots(chat_id)
       # Получаем данные из таблицы для следующей доступной даты
-
       spreadsheet_data = @sheets_formatter.get_spreadsheet_data
 
       # Находим следующую дату тенниса (первую строку после сегодняшнего дня)
@@ -1057,7 +1378,7 @@ module SheetFormatterBot
         }
       end
 
-      # Анализируем слоты без тренера (колонки 7-14) (индекс с нуля)
+      # Анализируем основные слоты без тренера (колонки 7-14) (индекс с нуля)
       slots_without_trainer = []
       for i in 7..14
         slot_name = next_date_row[i]
@@ -1072,6 +1393,37 @@ module SheetFormatterBot
 
       # Формируем клавиатуру для слотов без тренера
       show_slot_options(chat_id, next_date_str, slots_without_trainer, "Без тренера")
+
+      # Проверяем наличие дополнительных заполненных слотов (после колонки 14)
+      additional_slots = []
+      additional_slots_filled = false
+
+      # Проверяем, сколько колонок есть в строке
+      if next_date_row.length > 15
+        # Анализируем дополнительные слоты начиная с колонки 15
+        for i in 15..(next_date_row.length - 1)
+          slot_name = next_date_row[i]
+          # Если слот не пустой, добавляем его и помечаем, что есть заполненные дополнительные слоты
+          if slot_name && !slot_name.strip.empty?
+            additional_slots_filled = true
+            additional_slots << {
+              index: i,
+              name: slot_name.strip
+            }
+          else
+            additional_slots << {
+              index: i,
+              name: nil
+            }
+          end
+        end
+      end
+
+      # Показываем дополнительные слоты только если есть хотя бы один заполненный
+      if additional_slots_filled
+        show_slot_options(chat_id, next_date_str, additional_slots, "Дополнительные слоты")
+      end
+
     rescue StandardError => e
       log(:error, "Ошибка при получении данных для слотов: #{e.message}\n#{e.backtrace.join("\n")}")
       send_message(chat_id,
@@ -1172,8 +1524,10 @@ module SheetFormatterBot
         existing_slot_type = nil
         existing_slot_num = nil
 
-        # Анализируем только колонки 3-14, где находятся слоты игроков
-        (3..14).each do |col_idx|
+        # Проверяем все возможные колонки, в которых могут быть слоты игроков
+        max_col_index = [row.length - 1, 30].min # Ограничиваем максимальную колонку для проверки
+
+        (3..max_col_index).each do |col_idx|
           next if col_idx == slot_index # Пропускаем текущий выбранный слот
           next if row[col_idx].nil? || row[col_idx].strip.empty? # Пропускаем пустые ячейки
 
@@ -1184,8 +1538,18 @@ module SheetFormatterBot
 
           # Находим номер колонки, где уже записан пользователь
           existing_col_letter = (col_idx + "A".ord).chr
-          existing_slot_type = col_idx >= 7 ? "без тренера" : "с тренером"
-          existing_slot_num = col_idx >= 7 ? (col_idx - 6) : (col_idx - 2)
+
+          # Определяем тип слота и его номер в зависимости от колонки
+          if col_idx >= 15
+            existing_slot_type = "доп. слот"
+            existing_slot_num = col_idx - 14
+          elsif col_idx >= 7
+            existing_slot_type = "без тренера"
+            existing_slot_num = col_idx - 6
+          else
+            existing_slot_type = "с тренером"
+            existing_slot_num = col_idx - 2
+          end
 
           break
         end
@@ -1204,9 +1568,17 @@ module SheetFormatterBot
         col_letter = (slot_index + "A".ord).chr
         cell_a1 = "#{col_letter}#{row_index + 1}"
 
-        # Определяем тип слота (с тренером/без тренера)
-        slot_type = slot_index >= 7 ? "без тренера" : "с тренером"
-        slot_num = slot_index >= 7 ? (slot_index - 6) : (slot_index - 2)
+        # Определяем тип слота и его номер в зависимости от колонки
+        if slot_index >= 15
+          slot_type = "доп. слот"
+          slot_num = slot_index - 14
+        elsif slot_index >= 7
+          slot_type = "без тренера"
+          slot_num = slot_index - 6
+        else
+          slot_type = "с тренером"
+          slot_num = slot_index - 2
+        end
 
         if update_cell_value(Config.default_sheet_name, cell_a1, user.sheet_name)
           @bot_instance.api.answer_callback_query(
@@ -1327,10 +1699,32 @@ module SheetFormatterBot
     def send_message(chat_id, text, **options)
       return unless @bot_instance # Не пытаться отправить, если бот не инициализирован
 
+      # Добавляем небольшую случайную задержку (от 0.3 до 1.5 секунды) между сообщениями
+      # чтобы избежать слишком частых запросов к Telegram API
+      sleep(rand(0.3..1.5))
+
       log(:debug, "-> Отправка в #{chat_id}: #{text.gsub("\n", " ")}")
       @bot_instance.api.send_message(chat_id: chat_id, text: text, parse_mode: "Markdown", **options)
     rescue Telegram::Bot::Exceptions::ResponseError => e
       log_telegram_api_error(e, chat_id)
+
+      # Если получили ошибку 429 (Too Many Requests), узнаем время ожидания и ждем
+      if e.error_code == 429
+        # Пытаемся извлечь время ожидания из ответа API
+        retry_after = e.response && e.response.respond_to?(:parameters) ? e.response.parameters["retry_after"] : 5
+        retry_after = [retry_after.to_i, 3].max # Минимальное время ожидания 3 секунды
+
+        log(:warn, "Получена ошибка превышения лимитов Telegram API. Ожидание #{retry_after} секунд...")
+        sleep(retry_after)
+
+        # Пробуем отправить сообщение еще раз после ожидания
+        begin
+          @bot_instance.api.send_message(chat_id: chat_id, text: text, parse_mode: "Markdown", **options)
+          log(:info, "Повторная отправка успешна после ожидания")
+        rescue Telegram::Bot::Exceptions::ResponseError => retry_error
+          log(:error, "Не удалось отправить сообщение даже после ожидания: #{retry_error.message}")
+        end
+      end
     end
 
     def send_error_message(chat_id, text)
