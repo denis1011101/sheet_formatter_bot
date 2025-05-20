@@ -6,6 +6,10 @@ module SheetFormatterBot
   class NotificationScheduler
     attr_reader :bot, :sheets_formatter
 
+    IGNORED_SLOT_NAMES = [
+      "два корта", "три корта", "четыре корта", "корты", "бронь", "бронь корта", "бронь кортов"
+    ].freeze
+
     def initialize(bot:, sheets_formatter:)
       @bot = bot
       @sheets_formatter = sheets_formatter
@@ -673,8 +677,9 @@ module SheetFormatterBot
     def process_slots(row_data, range, slots_array, row_idx)
       range.each do |i|
         slot_name = row_data[i]
+        clean_name = slot_name.nil? ? nil : slot_name.strip.downcase
 
-        if slot_name.nil? || slot_name.strip.empty?
+        if slot_name.nil? || slot_name.strip.empty? || IGNORED_SLOT_NAMES.include?(clean_name)
           slots_array << "Свободно"
           next
         end

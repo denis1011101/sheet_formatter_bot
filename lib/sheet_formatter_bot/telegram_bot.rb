@@ -6,6 +6,10 @@ module SheetFormatterBot
     attr_reader :token, :sheets_formatter, :bot_instance, :user_registry
     attr_accessor :notification_scheduler
 
+    IGNORED_SLOT_NAMES = [
+      "два корта", "три корта", "четыре корта", "корты", "бронь", "бронь корта", "бронь кортов"
+    ].freeze
+
     def initialize(token: Config.telegram_token, sheets_formatter: SheetsFormatter.new, user_registry: nil, notification_scheduler: nil)
       @token = token
       @sheets_formatter = sheets_formatter
@@ -1132,6 +1136,11 @@ module SheetFormatterBot
       user_id = message.from.id
       text = message.text
 
+      # Не отвечаем в группах и супергруппах, если это не команда
+      if ['group', 'supergroup'].include?(message.chat.type)
+        return true unless text.start_with?('/')
+      end
+
       # Проверяем состояние пользователя
       if @user_states[user_id]
         case @user_states[user_id][:state]
@@ -1372,9 +1381,11 @@ module SheetFormatterBot
       slots_with_trainer = []
       for i in 3..6
         slot_name = next_date_row[i]
+        clean_name = slot_name.nil? ? nil : slot_name.strip.downcase
+
         slots_with_trainer << {
           index: i,
-          name: slot_name.nil? || slot_name.strip.empty? ? nil : slot_name.strip
+          name: (clean_name.nil? || clean_name.empty? || IGNORED_SLOT_NAMES.include?(clean_name)) ? nil : slot_name.strip
         }
       end
 
@@ -1382,9 +1393,11 @@ module SheetFormatterBot
       slots_without_trainer = []
       for i in 7..14
         slot_name = next_date_row[i]
+        clean_name = slot_name.nil? ? nil : slot_name.strip.downcase
+
         slots_without_trainer << {
           index: i,
-          name: slot_name.nil? || slot_name.strip.empty? ? nil : slot_name.strip
+          name: (clean_name.nil? || clean_name.empty? || IGNORED_SLOT_NAMES.include?(clean_name)) ? nil : slot_name.strip
         }
       end
 
@@ -1403,8 +1416,9 @@ module SheetFormatterBot
         # Анализируем дополнительные слоты начиная с колонки 15
         for i in 15..(next_date_row.length - 1)
           slot_name = next_date_row[i]
+          clean_name = slot_name.nil? ? nil : slot_name.strip.downcase
           # Если слот не пустой, добавляем его и помечаем, что есть заполненные дополнительные слоты
-          if slot_name && !slot_name.strip.empty?
+          if slot_name && !slot_name.strip.empty? && !IGNORED_SLOT_NAMES.include?(clean_name)
             additional_slots_filled = true
             additional_slots << {
               index: i,
