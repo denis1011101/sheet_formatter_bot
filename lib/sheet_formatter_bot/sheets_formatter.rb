@@ -30,18 +30,36 @@ module SheetFormatterBot
 
     # Получить все данные таблицы
     def get_spreadsheet_data(sheet_name = Config.default_sheet_name)
-      # Используем кэш, если данные не старше 5 минут
-      if @spreadsheet_data_cache[:data].nil? || Time.now > @spreadsheet_data_cache[:expires_at]
-        range = "#{sheet_name}!A1:Z100" # Берем большой диапазон, который охватывает все данные
-        response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
-        @spreadsheet_data_cache = {
-          data: response.values || [],
-          expires_at: Time.now + 300 # Кэш на 5 минут
-        }
-      end
+      max_attempts = 3
+      attempts = 0
 
-      @spreadsheet_data_cache[:data]
+      begin
+        # Используем кэш, если данные не старше 5 минут
+        if @spreadsheet_data_cache[:data].nil? || Time.now > @spreadsheet_data_cache[:expires_at]
+          range = "#{sheet_name}!A1:O100" # Берем большой диапазон, который охватывает все данные
+          response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
+          @spreadsheet_data_cache = {
+            data: response.values || [],
+            expires_at: Time.now + 300 # Кэш на 5 минут
+          }
+        end
+
+        @spreadsheet_data_cache[:data]
+      rescue Google::Apis::ServerError, Google::Apis::TransmissionError => e
+        attempts += 1
+        log(:warn, "Google ServerError при получении данных (попытка #{attempts}/#{max_attempts}): #{e.message}")
+        if attempts < max_attempts
+          sleep 2**attempts # экспоненциальная задержка: 2, 4 секунды
+          retry
+        else
+          log(:error, "Не удалось получить данные из Google Sheets после #{max_attempts} попыток: #{e.message}")
+          raise
+        end
+      end
     end
+
+    # Оптимизировать получение дат из таблицы
+    # Сперва получать нужный диапазон из первого столбца, потом брать всю строчку если нужная нам дата
 
     def get_cell_formats(sheet_name, cell_a1)
       # Обновляем кеш, если необходимо

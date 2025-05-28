@@ -7,7 +7,7 @@ module SheetFormatterBot
     attr_accessor :notification_scheduler
 
     IGNORED_SLOT_NAMES = [
-      "два корта", "три корта", "четыре корта", "корты", "бронь", "бронь корта", "бронь кортов"
+      "один корт", "два корта", "три корта", "четыре корта", "корты", "бронь", "бронь корта", "бронь кортов"
     ].freeze
 
     def initialize(token: Config.telegram_token, sheets_formatter: SheetsFormatter.new, user_registry: nil, notification_scheduler: nil)
@@ -613,7 +613,7 @@ module SheetFormatterBot
           inline_keyboard: dates.map { |d|
             [Telegram::Bot::Types::InlineKeyboardButton.new(text: d, callback_data: "admin:cancel_date:#{d}")]
           } + [
-            [Telegram::Bot::Types::InlineKeyboardButton.new(text: "❌ Отмена", callback_data: "admin:cancel_exit")]
+            [Telegram::Bot::Types::InlineKeyboardButton.new(text: "🚫 Отменен", callback_data: "admin:cancel_exit")]
           ]
         )
         send_message(chat_id, "Выберите дату для отмены корта:", reply_markup: keyboard)
@@ -644,7 +644,7 @@ module SheetFormatterBot
             ],
             [
               Telegram::Bot::Types::InlineKeyboardButton.new(
-                text: "❌ Отмена",
+                text: "🚫 Отменен",
                 callback_data: "admin:cancel_exit"
               )
             ]
