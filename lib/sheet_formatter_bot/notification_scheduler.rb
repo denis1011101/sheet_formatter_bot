@@ -777,7 +777,18 @@ module SheetFormatterBot
       # Определяем текст сообщения в зависимости от типа и статуса
       if notification_type == :final_reminder
         # Вычисляем, через сколько времени будет игра
-        game_time = Time.parse("#{game[:date]} #{game[:time]}")
+        # Конвертируем строки даты и времени в объект Time с правильным часовым поясом
+        date_parts = game[:date].split('.')
+        day = date_parts[0].to_i
+        month = date_parts[1].to_i
+        year = date_parts[2].to_i
+
+        time_parts = game[:time].split(':')
+        hour = time_parts[0].to_i
+        min = time_parts[1].to_i || 0
+
+        # Создаем время в нужном часовом поясе
+        game_time = @timezone.local_time(year, month, day, hour, min)
         current_time = @timezone.now
         time_diff_hours = ((game_time - current_time) / 3600).round
 
