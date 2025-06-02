@@ -1,14 +1,16 @@
-require 'date'
-require 'time'
-require 'tzinfo'
+# frozen_string_literal: true
+
+require "date"
+require "time"
+require "tzinfo"
+require_relative "utils/slot_utils"
 
 module SheetFormatterBot
+  # For scheduling and sending notifications to users
   class NotificationScheduler
     attr_reader :bot, :sheets_formatter
 
-    IGNORED_SLOT_NAMES = [
-      "один корт", "два корта", "три корта", "четыре корта", "корты", "бронь", "бронь корта", "бронь кортов"
-    ].freeze
+    include SheetFormatterBot::Utils::SlotUtils
 
     def initialize(bot:, sheets_formatter:)
       @bot = bot
@@ -22,7 +24,7 @@ module SheetFormatterBot
       @hours_before = Config.notification_hours_before
       @tennis_time = Config.tennis_default_time
       @check_interval = Config.notification_check_interval
-      @timezone = TZInfo::Timezone.get(Config.timezone || 'Asia/Yekaterinburg')
+      @timezone = TZInfo::Timezone.get(Config.timezone || "Asia/Yekaterinburg")
     end
 
     def start
@@ -470,7 +472,7 @@ module SheetFormatterBot
         place = row[2] || "обычное место"
 
         # Получаем всех игроков (колонки 3-15)
-        players = row[3..15].compact.reject(&:empty?)
+        players = row[3..15].compact.reject(&:empty?).reject { |name| IGNORED_SLOT_NAMES.include?(name.strip.downcase) }
 
         games << {
           date: date_str,
@@ -488,11 +490,11 @@ module SheetFormatterBot
 
       # Уникальный ключ для этой рассылки
       today = @timezone.now.to_date.strftime('%Y-%m-%d')
-      notification_key = "#{today}:#{game[:date]}:#{notification_type}"
+      notification_key = "personal:#{today}:#{game[:date]}:#{time_description}"
 
       # Если на сегодня такие уведомления уже отправлялись, пропускаем
       if @sent_notifications[notification_key]
-        log(:info, "Уведомления #{notification_type} для игры #{game[:date]} уже были отправлены сегодня")
+        log(:info, "Уведомления #{notification_type} для игры #{game[:date]} (#{time_description}) уже были отправлены сегодня")
         return
       end
 
@@ -667,11 +669,6 @@ module SheetFormatterBot
       end
     end
 
-    def slot_cancelled?(s)
-      s = s.strip.downcase
-      s == "отменен" || s == "отменён" || s == "отмена" || s.end_with?("отменен") || s.end_with?("отменён") || s.end_with?("отмена")
-    end
-
     def escape_markdown(text)
       return "" if text.nil?
       # Экранируем символы Markdown: * _ [ ] ( ) ~ ` > # + - = | { } . !
@@ -721,23 +718,6 @@ module SheetFormatterBot
         display_name = user&.username ? "@#{user.username}" : slot_name.strip
 
         slots_array << "#{status_emoji} #{display_name}"
-      end
-    end
-
-    # Вспомогательный метод для форматирования текста слотов
-    def format_slots_text(slots)
-      if slots.all? { |s| s == "Отменен" }
-        "Все слоты отменены"
-      else
-        slots.map.with_index do |slot, idx|
-          if slot == "Отменен"
-            "#{idx + 1}. 🚫 Отменен"
-          elsif slot == "Свободно"
-            "#{idx + 1}. ⚪ Свободно"
-          else
-            "#{idx + 1}. #{slot}"
-          end
-        end.join("\n")
       end
     end
 
