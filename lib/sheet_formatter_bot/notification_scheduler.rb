@@ -4,13 +4,19 @@ require "date"
 require "time"
 require "tzinfo"
 require_relative "utils/slot_utils"
+require_relative "utils/time_utils"
+require_relative "utils/telegram_utils"
+require_relative "utils/constants"
 
 module SheetFormatterBot
   # For scheduling and sending notifications to users
   class NotificationScheduler
-    attr_reader :bot, :sheets_formatter
-
     include SheetFormatterBot::Utils::SlotUtils
+    include SheetFormatterBot::Utils::TimeUtils
+    include SheetFormatterBot::Utils::TelegramUtils
+    include SheetFormatterBot::Utils::Constants
+
+    attr_reader :bot, :sheets_formatter
 
     def initialize(bot:, sheets_formatter:)
       @bot = bot
@@ -210,11 +216,7 @@ module SheetFormatterBot
       # Только если нужно обновить таблицу - получаем цвет и обновляем
       if should_update_sheet
         # Обновляем цвет текста ячейки в таблице
-        color = case response
-                when 'yes' then 'green'
-                when 'no' then 'red'
-                when 'maybe' then 'yellow'
-                end
+        color = STATUS_COLORS[response]
 
         log(:info, "Имя в таблице: '#{sheet_name}', поиск ячейки для обновления статуса на #{color}...")
         update_successful = update_attendance_in_sheet(date_str, sheet_name, color)
@@ -282,9 +284,7 @@ module SheetFormatterBot
     def send_test_notification(user, date_str)
       log(:info, "Отправка тестового уведомления для #{user.display_name}")
 
-      # Используем более информативное тестовое сообщение
-      current_hour = @timezone.now.hour
-      greeting = get_greeting_by_time
+      greeting = greeting_by_hour(@timezone.now.hour)
 
       # Создаем клавиатуру с кнопками да/нет/не уверен
       keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
@@ -503,7 +503,7 @@ module SheetFormatterBot
       # Отправляем уведомления только реальным игрокам (не "отмена")
       game[:players].each do |player_name|
         clean_name = player_name.strip.downcase
-        next if ["отмена", "отменен", "отменён"].include?(clean_name)
+        next if IGNORED_SLOT_NAMES.include?(clean_name)
 
         user = @user_registry.find_by_name(player_name)
         if user
@@ -669,12 +669,6 @@ module SheetFormatterBot
       end
     end
 
-    def escape_markdown(text)
-      return "" if text.nil?
-      # Экранируем символы Markdown: * _ [ ] ( ) ~ ` > # + - = | { } . !
-      text.to_s.gsub(/([_*\[\]()~`>#+\-=|{}.!])/, '\\\\\\1')
-    end
-
     # Вспомогательный метод для обработки слотов
     def process_slots(row_data, range, slots_array, row_idx)
       range.each do |i|
@@ -744,11 +738,11 @@ module SheetFormatterBot
 
       # Определяем текстовое представление текущего статуса
       status_text = case current_status
-                    when "yes"
+                    when STATUS_YES
                       "✅ Да (вы подтвердили участие)"
-                    when "no"
+                    when STATUS_NO
                       "❌ Нет (вы отказались)"
-                    when "maybe"
+                    when STATUS_MAYBE
                       "🤔 Не уверен"
                     else
                       "⚪ Не указан"
@@ -756,21 +750,11 @@ module SheetFormatterBot
 
       # Определяем текст сообщения в зависимости от типа и статуса
       if notification_type == :final_reminder
-        # Вычисляем, через сколько времени будет игра
-        # Конвертируем строки даты и времени в объект Time с правильным часовым поясом
-        date_parts = game[:date].split('.')
-        day = date_parts[0].to_i
-        month = date_parts[1].to_i
-        year = date_parts[2].to_i
-
-        time_parts = game[:time].split(':')
-        hour = time_parts[0].to_i
-        min = time_parts[1].to_i || 0
 
         # Создаем время в нужном часовом поясе
-        game_time = @timezone.local_time(year, month, day, hour, min)
+        game_time = parse_game_time(game[:date], game[:time], @timezone)
         current_time = @timezone.now
-        time_diff_hours = ((game_time - current_time) / 3600).round
+        time_diff_hours = hours_diff(game_time, current_time)
 
         # Формируем текст в зависимости от времени до игры
         time_text = case time_diff_hours
@@ -892,21 +876,6 @@ module SheetFormatterBot
       end
 
       false
-    end
-
-    def get_greeting_by_time
-      current_hour = @timezone.now.hour
-
-      case current_hour
-      when 5..11
-        "Доброе утро"
-      when 12..17
-        "Добрый день"
-      when 18..23
-        "Добрый вечер"
-      else
-        "Здравствуй"
-      end
     end
 
     def send_today_notifications
