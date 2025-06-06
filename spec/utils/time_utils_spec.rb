@@ -7,6 +7,21 @@ require_relative "../../lib/sheet_formatter_bot/utils/time_utils"
 RSpec.describe SheetFormatterBot::Utils::TimeUtils do
   include described_class
 
+    describe "#parse_game_hour" do
+    it "parses hour from valid time string" do
+      expect(parse_game_hour("19:30")).to eq(19)
+      expect(parse_game_hour("00:00")).to eq(0)
+      expect(parse_game_hour("7:15")).to eq(7)
+    end
+
+    it "returns nil for nil or invalid input" do
+      expect(parse_game_hour(nil)).to be_nil
+      expect(parse_game_hour("")).to be_nil
+      expect(parse_game_hour("abc")).to be_nil
+      expect(parse_game_hour("25:61")).to eq(25)
+    end
+  end
+
   describe "#greeting_by_hour" do
     it "returns 'Доброе утро' for 5..11" do
       (5..11).each do |h|

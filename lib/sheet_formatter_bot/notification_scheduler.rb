@@ -367,6 +367,17 @@ module SheetFormatterBot
         # Проверяем игры на завтра
         tomorrow_games = find_games_for_date(spreadsheet_data, tomorrow.strftime('%d.%m.%Y'))
 
+        # Если все игры на сегодня уже начались или прошли — выходим из функции
+        all_games_finished = today_games.all? do |game|
+          game_hour = parse_game_hour(game[:time])
+          game_hour && current_hour >= game_hour
+        end
+
+        if today_games.any? && all_games_finished
+          log(:info, "Все игры на сегодня уже начались или прошли — уведомления не отправляются")
+          return
+        end
+
         admin_ids = Config.admin_telegram_ids
         if today.wday == admin_reminder_wday && current_hour == admin_reminder_hour && !@sent_notifications["admin_friday_reminder:#{today}"]
           admin_ids.each do |admin_id|
@@ -385,7 +396,10 @@ module SheetFormatterBot
           # Если есть игры сегодня
           if today_games.any?
             log(:info, "Отправляем дневное личное напоминание об играх сегодня (всего: #{today_games.count})")
-            today_games.each do |game|
+              today_games.each do |game|
+              game_hour = parse_game_hour(game[:time])
+              # Пропускаем, если игра уже началась или прошла
+              next if game_hour && current_hour >= game_hour
               send_notifications_for_game(game, "сегодня", "дневное")
             end
           end
@@ -399,26 +413,18 @@ module SheetFormatterBot
           end
         end
 
-        # Дневное уведомление в общий чат
-        if current_hour == group_afternoon_hour
-          # Уведомление в день игры
-          if today_games.any?
-            log(:info, "Отправляем дневное уведомление в общий чат о сегодняшних играх")
-            today_games.each do |game|
-              send_general_chat_notification(game, "сегодня")
-            end
-          end
-        end
-
         # Вечернее личное уведомление о сегодняшних и завтрашних играх
         if current_hour == personal_evening_hour
           # Если есть игры сегодня
           if today_games.any?
             log(:info, "Отправляем вечернее личное напоминание об играх сегодня (всего: #{today_games.count})")
             today_games.each do |game|
+              game_hour = parse_game_hour(game[:time])
+              next if game_hour && current_hour >= game_hour
               send_notifications_for_game(game, "сегодня", "вечернее")
             end
           end
+
 
           # Если есть игры завтра
           if tomorrow_games.any?
@@ -448,12 +454,11 @@ module SheetFormatterBot
           # Проверяем текущий час и отправлялось ли уже напоминание сегодня
           if current_hour == final_reminder_hour && !@sent_notifications[final_reminder_key]
             log(:info, "Отправляем финальное напоминание об играх сегодня (всего: #{today_games.count})")
-
             today_games.each do |game|
+              game_hour = parse_game_hour(game[:time])
+              next if game_hour && current_hour >= game_hour
               send_notifications_for_game(game, "сегодня", :final_reminder)
             end
-
-            # Запоминаем, что финальное напоминание отправлено
             @sent_notifications[final_reminder_key] = Time.now
           end
         end

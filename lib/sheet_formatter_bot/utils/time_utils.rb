@@ -17,6 +17,19 @@ module SheetFormatterBot
         end
       end
 
+      def parse_game_hour(time_str)
+        return nil unless time_str.is_a?(String) && time_str.include?(':')
+
+        hour_str, _minute_str = time_str.split(':', 2)
+        return nil unless hour_str =~ /^\d+$/
+
+        hour = hour_str.to_i
+        hour
+      rescue StandardError => e
+        log(:error, "Ошибка при парсинге времени игры '#{time_str}': #{e.message}")
+        nil
+      end
+
       # Преобразует строку даты и времени в объект времени с учётом TZInfo
       def parse_game_time(date_str, time_str, timezone)
         day, month, year = date_str.split('.').map(&:to_i)
