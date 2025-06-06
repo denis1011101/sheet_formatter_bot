@@ -9,7 +9,7 @@ RSpec.describe SheetFormatterBot::Utils::SlotUtils do
 
   describe ".IGNORED_SLOT_NAMES" do
     it "contains technical values" do
-      expect(described_class::IGNORED_SLOT_NAMES).to include("один корт", "два корта", "корты")
+      expect(described_class::IGNORED_SLOT_NAMES).to include("один корт", "два корта", "отмена")
     end
   end
 

@@ -5,6 +5,7 @@ module SheetFormatterBot
     module Constants
       IGNORED_SLOT_NAMES = %w[
         отмена отменен отменён отменено отменить cancel
+        один\ корт два\ корта три\ корта четыре\ корта пять\ кортов шесть\ кортов грунт хард
       ].freeze
 
       STATUS_YES    = "yes"

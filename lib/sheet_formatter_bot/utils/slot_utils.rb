@@ -1,21 +1,16 @@
 # frozen_string_literal: true
 
+require_relative "constants"
+
 module SheetFormatterBot
   module Utils
     # Utility methods for handling slots in the SheetFormatterBot
     module SlotUtils
-      IGNORED_SLOT_NAMES = [
-        "один корт", "два корта", "три корта", "четыре корта", "корты", "бронь", "бронь корта", "бронь кортов"
-      ].freeze
+      include SheetFormatterBot::Utils::Constants
 
       def slot_cancelled?(s)
         s = s.strip.downcase
-        s == "отменен" ||
-          s == "отменён" ||
-          s == "отмена" ||
-          s.end_with?("отменен") ||
-          s.end_with?("отменён") ||
-          s.end_with?("отмена")
+        IGNORED_SLOT_NAMES.any? { |name| s == name || s.end_with?(name) }
       end
 
       def format_slots_text(slots)
