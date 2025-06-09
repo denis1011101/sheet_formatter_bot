@@ -209,7 +209,7 @@ module SheetFormatterBot
         mappings_message += "`#{user.sheet_name}` -> #{user.username ? "@#{user.username}" : user.full_name} (ID: #{user.telegram_id})\n"
       end
 
-      send_message(message.chat.id, mappings_message)
+      send_message(message.chat.id, mappings_message, parse_mode: nil)
     end
 
     def handle_sync_registry(message, _captures)
@@ -257,7 +257,7 @@ module SheetFormatterBot
         report += "\nНет пользователей с указанным именем в таблице!"
       end
 
-      send_message(message.chat.id, report)
+      send_message(message.chat.id, report, parse_mode: nil)
 
       # Создаем резервную копию после синхронизации
       @user_registry.create_backup
@@ -711,7 +711,7 @@ module SheetFormatterBot
           report += "\nНет пользователей с указанным именем в таблице!"
         end
 
-        send_message(chat_id, report)
+        send_message(chat_id, report, parse_mode: nil)
         @user_registry.create_backup
 
       when "map"
@@ -804,7 +804,6 @@ module SheetFormatterBot
           text: "Загружаю список сопоставлений..."
         )
 
-        # Получаем всех пользователей с установленными именами в таблице
         users_with_sheet_names = @user_registry.all_users.select { |u| u.sheet_name }
 
         if users_with_sheet_names.empty?
@@ -812,13 +811,11 @@ module SheetFormatterBot
           return
         end
 
-        # Формируем сообщение со списком сопоставлений
         mappings_message = "Текущие Список имён имен:\n\n"
         users_with_sheet_names.each do |user|
           mappings_message += "`#{user.sheet_name}` → #{user.username ? "@#{user.username}" : user.full_name} (ID: #{user.telegram_id})\n"
         end
 
-        # Добавляем кнопку "Назад" для возврата к меню
         keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
           inline_keyboard: [
             [
@@ -830,7 +827,7 @@ module SheetFormatterBot
           ]
         )
 
-        send_message(chat_id, mappings_message, reply_markup: keyboard)
+        send_message(chat_id, mappings_message, parse_mode: nil, reply_markup: keyboard)
 
       when "test_notification"
         # Отправляем тестовое уведомление
@@ -1061,7 +1058,6 @@ module SheetFormatterBot
         ]
       end
 
-      # Добавляем кнопку "Назад"
       keyboard_buttons << [
         Telegram::Bot::Types::InlineKeyboardButton.new(
           text: "« Назад к меню",
@@ -1664,7 +1660,7 @@ module SheetFormatterBot
             message_id: callback_query.message.message_id,
             text: success_message,
             parse_mode: "Markdown",
-            reply_markup: keyboard  # Добавляем клавиатуру
+            reply_markup: keyboard
           )
 
           @sheets_formatter.apply_format(Config.default_sheet_name, cell_a1, :text_color, "green")
@@ -1734,32 +1730,25 @@ module SheetFormatterBot
       show_main_menu(message.chat.id, "Неизвестная команда или неверный формат. Выберите действие из меню:")
     end
 
-    # --- Вспомогательные методы ---
+    def send_message(chat_id, text, parse_mode: "Markdown", **options)
+      return unless @bot_instance
 
-    def send_message(chat_id, text, **options)
-      return unless @bot_instance # Не пытаться отправить, если бот не инициализирован
-
-      # Добавляем небольшую случайную задержку (от 0.3 до 1.5 секунды) между сообщениями
-      # чтобы избежать слишком частых запросов к Telegram API
       sleep(rand(0.3..1.5))
 
       log(:debug, "-> Отправка в #{chat_id}: #{text.gsub("\n", " ")}")
-      @bot_instance.api.send_message(chat_id: chat_id, text: text, parse_mode: "Markdown", **options)
+      @bot_instance.api.send_message(chat_id: chat_id, text: text, parse_mode: parse_mode, **options)
     rescue Telegram::Bot::Exceptions::ResponseError => e
       log_telegram_api_error(e, chat_id)
 
-      # Если получили ошибку 429 (Too Many Requests), узнаем время ожидания и ждем
       if e.error_code == 429
-        # Пытаемся извлечь время ожидания из ответа API
         retry_after = e.response && e.response.respond_to?(:parameters) ? e.response.parameters["retry_after"] : 5
-        retry_after = [retry_after.to_i, 3].max # Минимальное время ожидания 3 секунды
+        retry_after = [retry_after.to_i, 3].max
 
         log(:warn, "Получена ошибка превышения лимитов Telegram API. Ожидание #{retry_after} секунд...")
         sleep(retry_after)
 
-        # Пробуем отправить сообщение еще раз после ожидания
         begin
-          @bot_instance.api.send_message(chat_id: chat_id, text: text, parse_mode: "Markdown", **options)
+          @bot_instance.api.send_message(chat_id: chat_id, text: text, parse_mode: parse_mode, **options)
           log(:info, "Повторная отправка успешна после ожидания")
         rescue Telegram::Bot::Exceptions::ResponseError => retry_error
           log(:error, "Не удалось отправить сообщение даже после ожидания: #{retry_error.message}")

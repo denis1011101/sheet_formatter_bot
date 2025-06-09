@@ -680,7 +680,7 @@ module SheetFormatterBot
         @bot.bot_instance.api.send_message(
           chat_id: general_chat_id,
           text: message,
-          parse_mode: 'Markdown'
+          parse_mode: "Markdown"
         )
 
         # Запоминаем, что уведомление отправлено
