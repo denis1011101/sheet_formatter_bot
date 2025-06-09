@@ -6,7 +6,7 @@ require_relative "../../lib/sheet_formatter_bot/utils/constants"
 RSpec.describe SheetFormatterBot::Utils::Constants do
   describe "IGNORED_SLOT_NAMES" do
     it "contains expected values" do
-      expect(described_class::IGNORED_SLOT_NAMES).to include("отмена", "отменен", "отменить", "cancel")
+      expect(described_class::IGNORED_SLOT_NAMES).to include("отмена", "отменен", "отменить", "cancel", "хард")
       expect(described_class::IGNORED_SLOT_NAMES).to be_an(Array)
     end
   end

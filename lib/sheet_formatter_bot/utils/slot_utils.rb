@@ -10,11 +10,11 @@ module SheetFormatterBot
 
       def slot_cancelled?(s)
         s = s.strip.downcase
-        IGNORED_SLOT_NAMES.any? { |name| s == name || s.end_with?(name) }
+        CANCELLED_SLOT_NAMES.any? { |name| s == name || s.end_with?(name) }
       end
 
       def format_slots_text(slots)
-        return "Все слоты отменены" if slots.all? { |s| s == "Отменен" }
+        return "Все слоты отменены" if slots.all? { |s| slot_cancelled?(s) }
 
         slots.map.with_index { |slot, idx| slot_line(slot, idx) }.join("\n")
       end

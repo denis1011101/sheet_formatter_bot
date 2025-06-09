@@ -1385,7 +1385,15 @@ module SheetFormatterBot
 
         slots_with_trainer << {
           index: i,
-          name: (clean_name.nil? || clean_name.empty? || IGNORED_SLOT_NAMES.include?(clean_name)) ? nil : slot_name.strip
+          name: if slot_name.nil? || slot_name.strip.empty?
+                  nil
+                elsif CANCELLED_SLOT_NAMES.include?(clean_name)
+                  "Отменен"
+                elsif IGNORED_SLOT_NAMES.include?(clean_name)
+                  nil
+                else
+                  slot_name.strip
+                end
         }
       end
 
@@ -1397,8 +1405,21 @@ module SheetFormatterBot
 
         slots_without_trainer << {
           index: i,
-          name: (clean_name.nil? || clean_name.empty? || IGNORED_SLOT_NAMES.include?(clean_name)) ? nil : slot_name.strip
+          name: if slot_name.nil? || slot_name.strip.empty?
+                  nil
+                elsif CANCELLED_SLOT_NAMES.include?(clean_name)
+                  "Отменен"
+                elsif IGNORED_SLOT_NAMES.include?(clean_name)
+                  nil
+                else
+                  slot_name.strip
+                end
         }
+      end
+
+      if slots_without_trainer.first(4).all? { |s| s[:name] == "Отменен" }
+        # Отменяем все остальные слоты без тренера (5-8)
+        slots_without_trainer.each { |slot| slot[:name] = "Отменен" }
       end
 
       # Формируем клавиатуру для слотов с тренером
@@ -1433,15 +1454,18 @@ module SheetFormatterBot
         end
       end
 
-      # Показываем дополнительные слоты только если есть хотя бы один заполненный
-      if additional_slots_filled
-        show_slot_options(chat_id, next_date_str, additional_slots, "Дополнительные слоты")
+      # Если первые 4 слота без тренера отменены — все дополнительные тоже считаем отменёнными
+      if slots_without_trainer.first(4).all? { |s| s[:name] == "Отменен" }
+        additional_slots.each { |slot| slot[:name] = "Отменен" }
+        additional_slots_filled = false # Не показывать клавиатуру для этих слотов
       end
 
-    rescue StandardError => e
-      log(:error, "Ошибка при получении данных для слотов: #{e.message}\n#{e.backtrace.join("\n")}")
-      send_message(chat_id,
-                   "Произошла ошибка при получении данных из таблицы. Попробуйте позже или обратитесь к администратору.")
+      # Показываем дополнительные слоты только если есть хотя бы один реально свободный
+      if additional_slots.any? { |slot| slot[:name].nil? }
+        show_slot_options(chat_id, next_date_str, additional_slots, "Дополнительные слоты")
+      elsif additional_slots.any? && additional_slots.all? { |slot| slot[:name] == "Отменен" }
+        send_message(chat_id, "К сожалению, все дополнительные слоты отменены.")
+      end
     end
 
     def show_slot_options(chat_id, date_str, slots, header)
@@ -1451,7 +1475,7 @@ module SheetFormatterBot
       slots.each_with_index do |slot, idx|
         if slot[:name]
           # Проверяем, является ли слот отмененным
-          if slot[:name].downcase == "отмена"
+        if CANCELLED_SLOT_NAMES.include?(slot[:name].downcase)
             message += "#{idx + 1}. 🚫 _Отменен_ ❌\n"
           else
             message += "#{idx + 1}. #{slot[:name]} ✅\n"
@@ -1465,6 +1489,8 @@ module SheetFormatterBot
 
       # Создаем клавиатуру с кнопками только для свободных слотов (не отмененных)
       empty_slots = slots.select { |s| s[:name].nil? }
+      # Если нет свободных слотов — не показываем клавиатуру
+      return if empty_slots.empty?
 
       if empty_slots.any?
         keyboard_buttons = empty_slots.map do |slot|

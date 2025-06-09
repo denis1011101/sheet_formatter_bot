@@ -584,6 +584,8 @@ module SheetFormatterBot
                       cell_content.include?("корт") ||
                       cell_content.include?("примечание")
 
+            next if IGNORED_SLOT_NAMES.include?(cell_content)
+
             unless is_note
               # Получаем формат ячейки для определения статуса
               col_letter = (i + 'A'.ord).chr
@@ -616,23 +618,38 @@ module SheetFormatterBot
       end
 
       # Формируем текст для слотов
-      slots_with_trainer_text = format_slots_text(slots_with_trainer)
-      slots_without_trainer_text = format_slots_text(slots_without_trainer)
+      slots_with_trainer_text =
+        if slots_with_trainer.size == 4 && slots_with_trainer.all? { |s| slot_cancelled?(s) }
+          "Все слоты отменены"
+        else
+          format_slots_text(slots_with_trainer)
+        end
 
-      if slots_with_trainer.all? { |s| slot_cancelled?(s) } &&
-         slots_without_trainer.all? { |s| slot_cancelled?(s) }
+      slots_without_trainer_text =
+        if slots_without_trainer.size == 4 && slots_without_trainer.all? { |s| slot_cancelled?(s) }
+          "Все слоты отменены"
+        else
+          format_slots_text(slots_without_trainer)
+        end
+
+      if slots_with_trainer_text == "Все слоты отменены" && slots_without_trainer_text == "Все слоты отменены"
         log(:info, "Все слоты отменены на #{game[:date]} - уведомление не отправляется")
         return
       end
 
       # Определяем, все ли места заняты
-      slots_with_trainer_available = slots_with_trainer.any? { |s| s == "Свободно" }
-      slots_without_trainer_available = slots_without_trainer.any? { |s| s == "Свободно" }
+      slots_with_trainer_cancelled = slots_with_trainer.size == 4 && slots_with_trainer.all? { |s| slot_cancelled?(s) }
+      slots_without_trainer_cancelled = slots_without_trainer.size == 4 &&
+                                        slots_without_trainer.all? { |s| slot_cancelled?(s) }
+
+      slots_with_trainer_available = !slots_with_trainer_cancelled && slots_with_trainer.any? { |s| s == "Свободно" }
+      slots_without_trainer_available = !slots_without_trainer_cancelled &&
+                                        slots_without_trainer.any? { |s| s == "Свободно" }
 
       all_slots_busy = !slots_with_trainer_available &&
-                      !slots_without_trainer_available &&
-                      !slots_with_trainer.all? { |s| s == "Отменен" } &&
-                      !slots_without_trainer.all? { |s| s == "Отменен" }
+                       !slots_without_trainer_available &&
+                       !slots_with_trainer_cancelled &&
+                       !slots_without_trainer_cancelled
 
       safe_username = escape_markdown(Config.telegram_bot_username)
 
@@ -678,15 +695,22 @@ module SheetFormatterBot
     def process_slots(row_data, range, slots_array, row_idx)
       range.each do |i|
         slot_name = row_data[i]
-        clean_name = slot_name.nil? ? nil : slot_name.strip.downcase
+        clean_name = slot_name&.strip&.downcase
 
-        if slot_name.nil? || slot_name.strip.empty? || IGNORED_SLOT_NAMES.include?(clean_name)
+        if slot_name.nil? || slot_name.strip.empty?
           slots_array << "Свободно"
           next
         end
 
-        if slot_name.strip.downcase == "отмена"
+        # Если это отмена — "Отменен"
+        if CANCELLED_SLOT_NAMES.include?(clean_name)
           slots_array << "Отменен"
+          next
+        end
+
+        # Если это техническое значение (но не отмена) — "Свободно"
+        if IGNORED_SLOT_NAMES.include?(clean_name)
+          slots_array << "Свободно"
           next
         end
 
