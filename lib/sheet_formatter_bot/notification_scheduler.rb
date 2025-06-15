@@ -346,7 +346,13 @@ module SheetFormatterBot
         log(:debug, "Проверка уведомлений на #{today}")
 
         # Получаем данные из таблицы один раз для оптимизации
-        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+        begin
+          spreadsheet_data = @sheets_formatter.get_spreadsheet_data
+        rescue StandardError => e
+          log(:error, "Не удалось получить данные из Google Sheets: #{e.message}")
+          # Просто пропускаем эту итерацию, попробуем в следующий раз
+          return
+        end
 
         # Получаем текущий час в часовом поясе пользователя
         current_hour = now.hour

@@ -38,7 +38,8 @@ Gem::Specification.new do |spec|
   # guide at: https://bundler.io/guides/creating_gem.html
   #
   spec.add_dependency "telegram-bot-ruby", "~> 0.19"
-  spec.add_dependency "google-apis-sheets_v4", "~> 0.19"
+  spec.add_dependency "google-apis-sheets_v4", "~> 0.44.0"
+  spec.add_dependency "google-apis-core", "~> 0.18.0"
   spec.add_dependency "googleauth", "~> 1.2"
   spec.add_dependency "dotenv", "~> 2.8"
   spec.add_dependency "zeitwerk", "~> 2.6"

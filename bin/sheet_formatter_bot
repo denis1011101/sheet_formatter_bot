@@ -1,41 +1,58 @@
 #!/usr/bin/env ruby
 # encoding: utf-8
 
-# Этот скрипт предназначен для запуска через `bundle exec`
+# frozen_string_literal: true
 
-# Загружаем основной файл гема, который настроит Zeitwerk
-require 'sheet_formatter_bot'
+require "sheet_formatter_bot"
 
-# --- Запуск бота ---
-begin
-  # Создаем экземпляры классов из нашего модуля
-  formatter = SheetFormatterBot::SheetsFormatter.new
-  bot = SheetFormatterBot::TelegramBot.new(sheets_formatter: formatter)
+# Параметры автоматического перезапуска
+max_restarts = 10
+restart_count = 0
 
-  # Запускаем основной цикл бота
-  bot.run
+loop do
+  begin
+    # --- Ваш существующий код запуска ---
+    formatter = SheetFormatterBot::SheetsFormatter.new
+    bot = SheetFormatterBot::TelegramBot.new(sheets_formatter: formatter)
 
-rescue SheetFormatterBot::ConfigError => e
-  # Ошибка конфигурации (например, отсутствует .env или переменная)
-  $stderr.puts "[ОШИБКА ЗАПУСКА] Проблема с конфигурацией: #{e.message}"
-  $stderr.puts "Убедитесь, что файл .env существует в корне проекта и содержит все необходимые переменные (TELEGRAM_BOT_TOKEN, GOOGLE_SHEET_ID)."
-  $stderr.puts "Также проверьте наличие и доступность файла учетных данных Google (credentials.json)."
-  exit(1) # Выход с кодом ошибки
+    # Запускаем основной цикл бота
+    bot.run
 
-rescue SheetFormatterBot::Error => e
-  # Другие ошибки инициализации или критические ошибки нашего гема
-  $stderr.puts "[ОШИБКА ЗАПУСКА] #{e.class}: #{e.message}"
-  # Можно добавить вывод backtrace для отладки: $stderr.puts e.backtrace
-  exit(1)
+    # Если дошли до сюда - бот завершился нормально
+    break
 
-rescue Interrupt
-  # Обработка Ctrl+C для чистого завершения
-  puts "\nПолучен сигнал прерывания (Ctrl+C). Завершение работы..."
-  exit(0)
+  rescue SheetFormatterBot::ConfigError => e
+    # Ошибки конфигурации НЕ перезапускаем - они требуют вмешательства
+    $stderr.puts "[ОШИБКА ЗАПУСКА] Проблема с конфигурацией: #{e.message}"
+    $stderr.puts "Убедитесь, что файл .env существует в корне проекта и содержит все необходимые переменные (TELEGRAM_BOT_TOKEN, GOOGLE_SHEET_ID)."
+    $stderr.puts "Также проверьте наличие и доступность файла учетных данных Google (credentials.json)."
+    exit(1)
 
-rescue StandardError => e
-  # Перехват любых других неожиданных ошибок при запуске
-  $stderr.puts "[КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА] Неперехваченное исключение: #{e.class} - #{e.message}"
-  $stderr.puts e.backtrace.join("\n")
-  exit(1)
+  rescue Interrupt
+    # Ctrl+C - выходим без перезапуска
+    puts "\nПолучен сигнал прерывания (Ctrl+C). Завершение работы..."
+    exit(0)
+
+  rescue SheetFormatterBot::Error, StandardError => e
+    # Все остальные ошибки - пытаемся перезапустить
+    restart_count += 1
+
+    if restart_count > max_restarts
+      $stderr.puts "[КРИТИЧЕСКАЯ ОШИБКА] Превышено максимальное количество перезапусков (#{max_restarts})"
+      $stderr.puts "Последняя ошибка: #{e.class} - #{e.message}"
+      exit(1)
+    end
+
+    restart_delay = [restart_count * 30, 300].min  # От 30 секунд до 5 минут
+    $stderr.puts "[ОШИБКА #{restart_count}/#{max_restarts}] #{e.class}: #{e.message}"
+    $stderr.puts "Перезапуск бота через #{restart_delay} секунд..."
+
+    # Сбрасываем счетчик, если прошло много времени между ошибками
+    if restart_count > 1 && Time.now - @last_error_time > 3600  # 1 час
+      restart_count = 1
+    end
+    @last_error_time = Time.now
+
+    sleep(restart_delay)
+  end
 end

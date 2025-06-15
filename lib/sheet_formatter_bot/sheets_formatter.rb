@@ -24,8 +24,37 @@ module SheetFormatterBot
       @credentials_path = credentials_path
       @service = nil
       @sheet_ids_cache = {}
-      @spreadsheet_data_cache = { data: nil, expires_at: Time.now }
+
+      @spreadsheet_data_cache = {
+        data: nil,
+        expires_at: Time.at(0),
+        dates_only: nil,
+        dates_expires_at: Time.at(0)
+      }
+
       validate_credentials_path
+      log(:info, "SheetsFormatter инициализирован для таблицы: #{spreadsheet_id}")
+    end
+
+    def get_dates_list(sheet_name = Config.default_sheet_name)
+      if @spreadsheet_data_cache[:dates_only].nil? || Time.now > @spreadsheet_data_cache[:dates_expires_at]
+        dates_range = "#{sheet_name}!A1:A50"
+        response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
+
+        dates = []
+        if response.values
+          response.values.each do |row|
+            if row && row[0] && row[0] =~ /\d{2}\.\d{2}\.\d{4}/
+              dates << row[0]
+            end
+          end
+        end
+
+        @spreadsheet_data_cache[:dates_only] = dates
+        @spreadsheet_data_cache[:dates_expires_at] = Time.now + 1800 # Кэш дат на 30 минут
+      end
+
+      @spreadsheet_data_cache[:dates_only]
     end
 
     # Получить все данные таблицы
@@ -34,13 +63,33 @@ module SheetFormatterBot
       attempts = 0
 
       begin
-        # Используем кэш, если данные не старше 5 минут
+        # Используем кэш, если данные не старше 10 минут
         if @spreadsheet_data_cache[:data].nil? || Time.now > @spreadsheet_data_cache[:expires_at]
-          range = "#{sheet_name}!A1:O100" # Берем большой диапазон, который охватывает все данные
+          # ОПТИМИЗАЦИЯ: Сначала получаем только даты из первого столбца для определения диапазона
+          dates_range = "#{sheet_name}!A1:A100"
+          dates_response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
+
+          # Находим последнюю непустую строку с датой
+          last_row = 1
+          if dates_response.values
+            dates_response.values.each_with_index do |row, idx|
+              if row && row[0] && row[0] =~ /\d{2}\.\d{2}\.\d{4}/
+                last_row = idx + 1
+              end
+            end
+          end
+
+          # Добавляем небольшой буфер и ограничиваем максимум
+          last_row = [last_row + 5, 50].min
+
+          # Теперь читаем только нужный диапазон
+          range = "#{sheet_name}!A1:O#{last_row}"
+          log(:debug, "Оптимизированное чтение диапазона: #{range}")
+
           response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
           @spreadsheet_data_cache = {
             data: response.values || [],
-            expires_at: Time.now + 300 # Кэш на 5 минут
+            expires_at: Time.now + 600 # Кэш на 10 минут
           }
         end
 
@@ -58,8 +107,51 @@ module SheetFormatterBot
       end
     end
 
-    # Оптимизировать получение дат из таблицы
-    # Сперва получать нужный диапазон из первого столбца, потом брать всю строчку если нужная нам дата
+    def get_spreadsheet_data_for_dates(dates_array, sheet_name = Config.default_sheet_name)
+      return [] if dates_array.empty?
+
+      max_attempts = 3
+      attempts = 0
+
+      begin
+        # Сначала получаем все даты из первого столбца
+        dates_range = "#{sheet_name}!A1:A50"
+        dates_response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
+
+        target_rows = []
+        if dates_response.values
+          dates_response.values.each_with_index do |row, idx|
+            if row && row[0] && dates_array.include?(row[0])
+              target_rows << idx + 1  # +1 для A1 нотации
+            end
+          end
+        end
+
+        # Если нашли нужные строки, читаем только их
+        if target_rows.any?
+          all_data = []
+          target_rows.each do |row_num|
+            range = "#{sheet_name}!A#{row_num}:O#{row_num}"
+            response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
+            all_data.concat(response.values || [])
+          end
+          log(:debug, "Оптимизированное чтение для дат #{dates_array.join(', ')}: #{target_rows.size} строк")
+          return all_data
+        end
+
+        []
+      rescue Google::Apis::ServerError, Google::Apis::TransmissionError => e
+        attempts += 1
+        log(:warn, "Google ServerError при получении данных для дат (попытка #{attempts}/#{max_attempts}): #{e.message}")
+        if attempts < max_attempts
+          sleep 2**attempts
+          retry
+        else
+          log(:error, "Не удалось получить данные для дат после #{max_attempts} попыток: #{e.message}")
+          return []
+        end
+      end
+    end
 
     def get_cell_formats(sheet_name, cell_a1)
       # Обновляем кеш, если необходимо
@@ -121,12 +213,19 @@ module SheetFormatterBot
       end
     end
 
-    # Метод для доступа к сервису Google Sheets API
     def authenticated_service
       @service ||= begin
         log(:debug, "Инициализация Google Sheets Service...")
         s = Google::Apis::SheetsV4::SheetsService.new
         s.authorization = authorize_google_sheets
+
+        s.client_options.application_name = "SheetFormatterBot"
+
+        # Современные свойства для таймаутов (работают в >= 0.16.0)
+        s.client_options.open_timeout_sec = 60 # Таймаут на установку соединения
+        s.client_options.read_timeout_sec = 60 # Таймаут на чтение данных
+        s.client_options.send_timeout_sec = 60 # Таймаут на отправку данных (опционально)
+
         log(:debug, "Google Sheets Service инициализирован.")
         s
       rescue StandardError => e
@@ -135,12 +234,13 @@ module SheetFormatterBot
       end
     end
 
-    def spreadsheet_id
-      @spreadsheet_id
-    end
-
     def clear_cache
-      @spreadsheet_data_cache[:data] = nil if @spreadsheet_data_cache
+      if @spreadsheet_data_cache
+        @spreadsheet_data_cache[:data] = nil
+        @spreadsheet_data_cache[:dates_only] = nil
+        @spreadsheet_data_cache[:expires_at] = Time.at(0)
+        @spreadsheet_data_cache[:dates_expires_at] = Time.at(0)
+      end
     end
 
     def update_cell_value(sheet_name, range_a1, value)
@@ -156,7 +256,7 @@ module SheetFormatterBot
           spreadsheet_id,
           "#{sheet_name}!#{range_a1}",
           value_range,
-          value_input_option: 'USER_ENTERED'
+          value_input_option: "USER_ENTERED"
         )
 
         # Сбрасываем кэш после изменения

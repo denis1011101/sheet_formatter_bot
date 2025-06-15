@@ -4,12 +4,14 @@ module SheetFormatterBot
   module Utils
     module Constants
       CANCELLED_SLOT_NAMES = [
-        "отмена", "отменен", "отменён", "отменено", "отменить", "cancel"
+        "отмена", "отменен", "отменён", "отменено", "отменить",
+        "canceled", "cancelled", "cancel"
       ].freeze
 
       IGNORED_SLOT_NAMES = (
         CANCELLED_SLOT_NAMES +
         [
+          "резерв", "reserve", "backup",
           "один корт", "два корта", "три корта", "четыре корта",
           "пять кортов", "шесть кортов", "грунт", "хард"
         ]
