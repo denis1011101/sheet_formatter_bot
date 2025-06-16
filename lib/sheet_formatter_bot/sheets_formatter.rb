@@ -1,5 +1,7 @@
 require 'google/apis/sheets_v4'
 require 'googleauth'
+require 'set'
+require_relative 'utils/constants'
 
 module SheetFormatterBot
   class SheetNotFoundError < SheetsApiError; end
@@ -7,15 +9,7 @@ module SheetFormatterBot
   class InvalidFormatError < SheetsApiError; end
 
   class SheetsFormatter
-    COLOR_MAP = {
-      'red'    => { red: 1.0, green: 0.0, blue: 0.0 },
-      'green'  => { red: 0.0, green: 0.5, blue: 0.0 },
-      'blue'   => { red: 0.0, green: 0.0, blue: 1.0 },
-      'yellow' => { red: 1.0, green: 0.5, blue: 0.0 },
-      'white'  => { red: 1.0, green: 1.0, blue: 1.0 },
-      'black'  => { red: 0.0, green: 0.0, blue: 0.0 },
-      'none'   => nil
-    }.transform_values { |v| v ? Google::Apis::SheetsV4::Color.new(**v) : nil }.freeze
+    COLOR_MAP = SheetFormatterBot::Utils::Constants::COLOR_MAP.transform_values { |v| v ? Google::Apis::SheetsV4::Color.new(**v) : nil }.freeze
 
     attr_reader :spreadsheet_id, :credentials_path
 
@@ -51,25 +45,21 @@ module SheetFormatterBot
         end
 
         @spreadsheet_data_cache[:dates_only] = dates
-        @spreadsheet_data_cache[:dates_expires_at] = Time.now + 1800 # Кэш дат на 30 минут
+        @spreadsheet_data_cache[:dates_expires_at] = Time.now + 1800
       end
 
       @spreadsheet_data_cache[:dates_only]
     end
 
-    # Получить все данные таблицы
     def get_spreadsheet_data(sheet_name = Config.default_sheet_name)
       max_attempts = 3
       attempts = 0
 
       begin
-        # Используем кэш, если данные не старше 10 минут
         if @spreadsheet_data_cache[:data].nil? || Time.now > @spreadsheet_data_cache[:expires_at]
-          # ОПТИМИЗАЦИЯ: Сначала получаем только даты из первого столбца для определения диапазона
           dates_range = "#{sheet_name}!A1:A100"
           dates_response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
 
-          # Находим последнюю непустую строку с датой
           last_row = 1
           if dates_response.values
             dates_response.values.each_with_index do |row, idx|
@@ -79,17 +69,15 @@ module SheetFormatterBot
             end
           end
 
-          # Добавляем небольшой буфер и ограничиваем максимум
           last_row = [last_row + 5, 50].min
 
-          # Теперь читаем только нужный диапазон
           range = "#{sheet_name}!A1:O#{last_row}"
           log(:debug, "Оптимизированное чтение диапазона: #{range}")
 
           response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
           @spreadsheet_data_cache = {
             data: response.values || [],
-            expires_at: Time.now + 600 # Кэш на 10 минут
+            expires_at: Time.now + 600
           }
         end
 
@@ -98,7 +86,7 @@ module SheetFormatterBot
         attempts += 1
         log(:warn, "Google ServerError при получении данных (попытка #{attempts}/#{max_attempts}): #{e.message}")
         if attempts < max_attempts
-          sleep 2**attempts # экспоненциальная задержка: 2, 4 секунды
+          sleep 2**attempts
           retry
         else
           log(:error, "Не удалось получить данные из Google Sheets после #{max_attempts} попыток: #{e.message}")
@@ -114,20 +102,19 @@ module SheetFormatterBot
       attempts = 0
 
       begin
-        # Сначала получаем все даты из первого столбца
-        dates_range = "#{sheet_name}!A1:A50"
+        dates_range = "#{sheet_name}!A1:A100"
         dates_response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
+        date_rows = dates_response.values.map { |row| row[0] }
 
         target_rows = []
-        if dates_response.values
-          dates_response.values.each_with_index do |row, idx|
-            if row && row[0] && dates_array.include?(row[0])
-              target_rows << idx + 1  # +1 для A1 нотации
-            end
+        dates_array.each do |target_date|
+          idx = date_rows.bsearch_index { |date| date && date >= target_date }
+
+          if idx && date_rows[idx] == target_date
+            target_rows << idx + 1
           end
         end
 
-        # Если нашли нужные строки, читаем только их
         if target_rows.any?
           all_data = []
           target_rows.each do |row_num|
@@ -135,7 +122,7 @@ module SheetFormatterBot
             response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
             all_data.concat(response.values || [])
           end
-          log(:debug, "Оптимизированное чтение для дат #{dates_array.join(', ')}: #{target_rows.size} строк")
+          log(:debug, "Бинарный поиск: найдено #{target_rows.size} строк для дат #{dates_array.join(', ')}")
           return all_data
         end
 
@@ -154,18 +141,15 @@ module SheetFormatterBot
     end
 
     def get_cell_formats(sheet_name, cell_a1)
-      # Обновляем кеш, если необходимо
       return nil if sheet_name.nil? || cell_a1.nil?
 
       begin
-        # Получаем информацию о форматировании ячейки
         result = authenticated_service.get_spreadsheet(
           spreadsheet_id,
           fields: 'sheets.data.rowData.values.effectiveFormat',
           ranges: ["#{sheet_name}!#{cell_a1}"]
         )
 
-        # Анализируем результат
         return nil if result.sheets.empty? || result.sheets[0].data.empty?
 
         values = result.sheets[0].data[0].row_data&.first&.values
@@ -174,14 +158,11 @@ module SheetFormatterBot
         format = values.first.effective_format
         return nil unless format
 
-        # Возвращаем информацию о форматировании в виде хеша
         formats = {}
 
-        # Получаем цвет текста, если он установлен
         if format.text_format && format.text_format.foreground_color
           color = format.text_format.foreground_color
 
-          # Более надежное определение цветов по диапазону значений
           if color.red.to_f > 0.7 && color.green.to_f < 0.3 && color.blue.to_f < 0.3
             formats[:text_color] = "red"
             log(:debug, "Обнаружен красный текст в #{cell_a1}: #{color.inspect}")
@@ -193,15 +174,13 @@ module SheetFormatterBot
             log(:debug, "Обнаружен желтый текст в #{cell_a1}: #{color.inspect}")
           elsif (color.red.to_f < 0.2 && color.green.to_f < 0.2 && color.blue.to_f < 0.2) ||
                 (color.red.nil? && color.green.nil? && color.blue.nil?)
-            formats[:text_color] = "black" # Дефолтный цвет
+            formats[:text_color] = "black"
             log(:debug, "Обнаружен черный (дефолтный) текст в #{cell_a1}: #{color.inspect}")
           else
-            # Для любых других цветов, которые не подходят под наши условия
             formats[:text_color] = "other"
             log(:debug, "Обнаружен нестандартный цвет текста в #{cell_a1}: r=#{color.red&.to_f}, g=#{color.green&.to_f}, b=#{color.blue&.to_f}")
           end
         else
-          # Если foreground_color не задан, считаем что это дефолтный (черный) цвет
           formats[:text_color] = "black"
           log(:debug, "Цвет текста не задан в #{cell_a1}, используется дефолтный (черный)")
         end
@@ -221,10 +200,9 @@ module SheetFormatterBot
 
         s.client_options.application_name = "SheetFormatterBot"
 
-        # Современные свойства для таймаутов (работают в >= 0.16.0)
-        s.client_options.open_timeout_sec = 60 # Таймаут на установку соединения
-        s.client_options.read_timeout_sec = 60 # Таймаут на чтение данных
-        s.client_options.send_timeout_sec = 60 # Таймаут на отправку данных (опционально)
+        s.client_options.open_timeout_sec = 60
+        s.client_options.read_timeout_sec = 60
+        s.client_options.send_timeout_sec = 60
 
         log(:debug, "Google Sheets Service инициализирован.")
         s
@@ -259,7 +237,6 @@ module SheetFormatterBot
           value_input_option: "USER_ENTERED"
         )
 
-        # Сбрасываем кэш после изменения
         @spreadsheet_data_cache[:data] = nil
 
         log(:info, "Значение ячейки обновлено: #{sheet_name}!#{range_a1} -> '#{value}'")
@@ -283,7 +260,6 @@ module SheetFormatterBot
       authenticated_service.batch_update_spreadsheet(spreadsheet_id, batch_update_request)
       log(:info, "Форматирование применено: #{sheet_name}!#{range_a1} -> #{format_type} #{value}")
 
-      # Сбрасываем кэш после изменения
       @spreadsheet_data_cache[:data] = nil
 
       true
@@ -333,7 +309,7 @@ module SheetFormatterBot
       raise InvalidRangeError, "Неверный формат ячейки: '#{a1_notation}' (ожидается формат типа A1, B12)" unless match
 
       col_str = match[1].upcase
-      row_index = match[2].to_i - 1 # 0-based index
+      row_index = match[2].to_i - 1
 
       col_index = col_str.chars.reduce(0) { |sum, char| sum * 26 + (char.ord - 'A'.ord + 1) } - 1
 
@@ -365,7 +341,7 @@ module SheetFormatterBot
         else
           raise InvalidFormatError, "Неизвестный цвет фона '#{value}'. Доступные: #{COLOR_MAP.keys.join(', ')}."
         end
-      when :text_color # Добавляем новый тип форматирования для цвета текста
+      when :text_color
         color_key = value.to_s.downcase
         if COLOR_MAP.key?(color_key)
           cell_format.text_format = Google::Apis::SheetsV4::TextFormat.new(

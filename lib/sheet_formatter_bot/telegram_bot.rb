@@ -861,7 +861,7 @@ module SheetFormatterBot
       action = callback_query.data.split(":")[1]
       user_id = callback_query.from.id
       chat_id = callback_query.message.chat.id
-      message_id = callback_query.message.message_id  # Получаем ID сообщения
+      message_id = callback_query.message.message_id
       user = @user_registry.find_by_telegram_id(user_id)
 
       case action
@@ -984,7 +984,6 @@ module SheetFormatterBot
           return
         end
 
-        # Если есть игры, создаем кнопки для изменения статуса в том же сообщении
         status_content = get_status_change_content(upcoming_games)
         edit_or_send_menu(
           chat_id,
@@ -1119,6 +1118,10 @@ module SheetFormatterBot
           callback_query_id: callback_query.id
         )
 
+        if @user_states[user_id] && @user_states[user_id][:state] == :changing_name
+          @user_states.delete(user_id)
+        end
+
         edit_or_send_menu(
           chat_id,
           *get_main_menu_content(user),
@@ -1128,7 +1131,6 @@ module SheetFormatterBot
     end
 
     def get_status_change_content(games)
-      # Если игра только одна, сразу показываем кнопки для изменения статуса
       if games.size == 1
         game = games[0]
         text = <<~MESSAGE
