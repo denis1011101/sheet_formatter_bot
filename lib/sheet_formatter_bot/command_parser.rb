@@ -52,6 +52,24 @@ module SheetFormatterBot
       )
 
       register(
+        %r{^/menu$}i,
+        :handle_show_menu,
+        "/menu - Показать главное меню"
+      )
+
+      register(
+        %r{^/slots$}i,
+        :handle_show_slots,
+        "/slots - Показать доступные слоты"
+      )
+
+      register(
+        %r{^/status$}i,
+        :handle_change_status_command,
+        "/status - Изменить статус участия"
+      )
+
+      register(
         %r{^/show_menu$}i,
         :handle_show_menu,
         "/show_menu - Показать главное меню бота"
@@ -62,6 +80,12 @@ module SheetFormatterBot
         %r{^/map\s+(\S+)\s+(@\S+|\S+@\S+|\d+)$}i,
         :handle_name_mapping,
         "/map <Имя_в_таблице> <@username или ID> - Сопоставить имя в таблице с пользователем Telegram"
+      )
+
+      register(
+        %r{^/myname$}i,
+        :handle_myname_prompt,
+        "/myname - Показать текущее имя или запросить новое"
       )
 
       register(

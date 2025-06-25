@@ -32,12 +32,14 @@ module SheetFormatterBot
 
     def get_dates_list(sheet_name = Config.default_sheet_name)
       if @spreadsheet_data_cache[:dates_only].nil? || Time.now > @spreadsheet_data_cache[:dates_expires_at]
-        dates_range = "#{sheet_name}!A1:A50"
+        dates_range = "#{sheet_name}!A:A"
         response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
 
         dates = []
         if response.values
-          response.values.each do |row|
+          response.values.each_with_index do |row, idx|
+            break if idx > 1000 # Ограничение для защиты от огромных таблиц
+
             if row && row[0] && row[0] =~ /\d{2}\.\d{2}\.\d{4}/
               dates << row[0]
             end
@@ -57,19 +59,21 @@ module SheetFormatterBot
 
       begin
         if @spreadsheet_data_cache[:data].nil? || Time.now > @spreadsheet_data_cache[:expires_at]
-          dates_range = "#{sheet_name}!A1:A100"
+          dates_range = "#{sheet_name}!A:A"
           dates_response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
 
           last_row = 1
           if dates_response.values
             dates_response.values.each_with_index do |row, idx|
+              break if idx > 1000  # Защита от слишком больших таблиц
+
               if row && row[0] && row[0] =~ /\d{2}\.\d{2}\.\d{4}/
                 last_row = idx + 1
               end
             end
           end
 
-          last_row = [last_row + 5, 50].min
+          last_row = [last_row + 5, 500].min
 
           range = "#{sheet_name}!A1:O#{last_row}"
           log(:debug, "Оптимизированное чтение диапазона: #{range}")
@@ -102,16 +106,34 @@ module SheetFormatterBot
       attempts = 0
 
       begin
-        dates_range = "#{sheet_name}!A1:A100"
+        log(:debug, "🔍 Поиск данных для дат: #{dates_array.join(", ")}")
+        dates_range = "#{sheet_name}!A:A"
         dates_response = authenticated_service.get_spreadsheet_values(spreadsheet_id, dates_range)
-        date_rows = dates_response.values.map { |row| row[0] }
+
+        date_rows_with_index = []
+        dates_response.values.each_with_index do |row, idx|
+          break if idx > 1000 # Защита от слишком больших таблиц
+
+          if row && row[0] && row[0] =~ /\d{2}\.\d{2}\.\d{4}/
+            date_rows_with_index << { date: row[0], original_index: idx }
+            log(:debug, "📅 Строка #{idx+1}: #{row[0]}")
+          end
+        end
+
+        log(:debug, "📊 Всего найдено дат в таблице: #{date_rows_with_index.size}")
+
+        date_rows_with_index.sort_by! { |item| item[:date] }
+        log(:debug, "🔄 Массив дат отсортирован для бинарного поиска")
 
         target_rows = []
         dates_array.each do |target_date|
-          idx = date_rows.bsearch_index { |date| date && date >= target_date }
+          result = date_rows_with_index.bsearch { |item| item[:date] >= target_date }
 
-          if idx && date_rows[idx] == target_date
-            target_rows << idx + 1
+          if result && result[:date] == target_date
+            target_rows << result[:original_index] + 1 # +1 для A1 нотации
+            log(:debug, "✓ Найдена дата #{target_date} в строке #{result[:original_index] + 1}")
+          else
+            log(:warn, "✗ Дата #{target_date} не найдена в таблице")
           end
         end
 
@@ -122,7 +144,7 @@ module SheetFormatterBot
             response = authenticated_service.get_spreadsheet_values(spreadsheet_id, range)
             all_data.concat(response.values || [])
           end
-          log(:debug, "Бинарный поиск: найдено #{target_rows.size} строк для дат #{dates_array.join(', ')}")
+          log(:debug, "Бинарный поиск: найдено #{target_rows.size} строк для дат #{dates_array.join(", ")}")
           return all_data
         end
 

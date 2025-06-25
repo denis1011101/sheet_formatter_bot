@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "telegram/bot"
+require "net/http"
 require_relative "utils/slot_utils"
 
 module SheetFormatterBot
@@ -51,16 +52,23 @@ module SheetFormatterBot
             @bot_instance = bot # Сохраняем экземпляр клиента API
 
             begin
-              # Настройка команд бота
+              # Основные команды для быстрого доступа
               commands = [
-                # { command: "/start", description: "Регистрация в боте и показ справки" },
-                # { command: "/show_menu", description: "Показать главное меню бота" },
-                # { command: "/myname", description: "Указать свое имя в таблице" },
-                # { command: "/mappings", description: "Показать текущие сопоставления имен" },
-                # { command: "/test", description: "Отправить тестовое уведомление" }
+                { command: "menu", description: "🏠 Главное меню" },
+                { command: "slots", description: "🗓️ Доступные слоты" },
+                { command: "status", description: "📋 Изменить статус" },
+                { command: "myname", description: "📝 Указать имя в таблице" }
               ]
 
               bot.api.set_my_commands(commands: commands)
+
+              # Кнопка меню в интерфейсе
+              bot.api.set_chat_menu_button(
+                menu_button: {
+                  type: "commands"
+                }
+              )
+
               log(:info, "Команды бота настроены успешно")
             rescue => e
               log(:error, "Ошибка при настройке команд бота: #{e.message}")
@@ -125,6 +133,60 @@ module SheetFormatterBot
       rescue Errno::ESRCH
         # Процесс не существует
         false
+      end
+    end
+
+    def handle_change_status_command(message, _captures)
+      user_id = message.from.id
+      user = @user_registry.find_by_telegram_id(user_id)
+
+      unless user
+        # Автоматически регистрируем пользователя, если он еще не зарегистрирован
+        user = User.from_telegram_user(message.from)
+        @user_registry.register_user(user)
+      end
+
+      # Если у пользователя не указано имя в таблице, предлагаем указать
+      unless user.sheet_name
+        send_message(
+          message.chat.id,
+          "⚠️ Сначала укажите своё имя в таблице с помощью команды `/myname <Имя_в_таблице>`"
+        )
+        return
+      end
+
+      # Получаем информацию о ближайших играх пользователя
+      upcoming_games = find_upcoming_games_for_user(user)
+
+      if upcoming_games.empty?
+        send_message(message.chat.id, "📋 У вас нет запланированных игр на ближайшие дни.")
+        return
+      end
+
+      # Показываем варианты изменения статуса
+      show_status_change_options(message.chat.id, upcoming_games)
+    end
+
+    def handle_myname_prompt(message, _captures)
+      user_id = message.from.id
+      user = @user_registry.find_by_telegram_id(user_id)
+
+      unless user
+        # Автоматически регистрируем пользователя, если он еще не зарегистрирован
+        user = User.from_telegram_user(message.from)
+        @user_registry.register_user(user)
+      end
+
+      if user.sheet_name
+        send_message(
+          message.chat.id,
+          "Ваше текущее имя в таблице: *#{user.sheet_name}*\n\nДля изменения используйте: `/myname <Новое_имя>`"
+        )
+      else
+        send_message(
+          message.chat.id,
+          "У вас не указано имя в таблице.\n\nДля установки используйте: `/myname <Ваше_имя_в_таблице>`"
+        )
       end
     end
 
@@ -558,11 +620,13 @@ module SheetFormatterBot
 
     def get_main_menu_content(user = nil)
       sheet_name = user&.sheet_name || "Не указано"
+      sheet_url = "https://docs.google.com/spreadsheets/d/#{Config.spreadsheet_id}/edit"
 
       text = <<~MENU
         Главное меню:
 
         Ваше имя в таблице: *#{sheet_name}*
+         📊 [Открыть таблицу](#{sheet_url})
 
         Выберите действие:
       MENU
@@ -1521,9 +1585,7 @@ module SheetFormatterBot
       end
 
       # Никакое состояние не соответствует полученному сообщению
-      # Предлагаем выбор из меню
-      show_main_menu(message.chat.id, "Не понимаю вашу команду. Выберите действие из меню:")
-      true # Всегда обрабатываем текстовые сообщения, чтобы избежать команд
+      false
     end
 
     def show_main_menu(chat_id, text = "Главное меню:")
@@ -2085,11 +2147,10 @@ module SheetFormatterBot
         log(:warn, "   -> Бот заблокирован пользователем или удален из чата #{chat_id}.")
       when 429 # Too Many Requests
         log(:warn, "   -> Превышены лимиты Telegram API. Нужно замедлиться.")
-        sleep(1) # Небольшая пауза
+        sleep(1)
       end
     end
 
-    # Простое логирование в stdout
     def log(level, message)
       puts "[#{Time.now.strftime("%Y-%m-%d %H:%M:%S")}] [#{level.upcase}] [TelegramBot] #{message}"
     end

@@ -1005,56 +1005,53 @@ module SheetFormatterBot
       begin
         log(:info, "Начинаем обновление статуса для #{player_name} на #{date_str}")
 
-        # Очищаем имя игрока от пробелов для более надежного сравнения
         clean_player_name = player_name.strip
 
-        # Находим ячейку, где находится игрок для указанной даты
         sheet_name = Config.default_sheet_name
-        log(:info, "Получаем данные листа #{sheet_name}")
+        log(:info, "Получаем данные для даты #{date_str}")
 
-        spreadsheet_data = @sheets_formatter.get_spreadsheet_data
-        log(:info, "Получено #{spreadsheet_data.size} строк из таблицы")
+        target_date_data = @sheets_formatter.get_spreadsheet_data_for_dates([date_str])
 
-        target_row_index = nil
-        target_col_index = nil
-
-        # Ищем строку с датой
-        spreadsheet_data.each_with_index do |row, row_idx|
-          log(:debug, "Проверяем строку #{row_idx}: #{row[0] || 'пусто'}")
-          next unless row[0] == date_str
-
-          log(:info, "Нашли строку с датой #{date_str} (индекс: #{row_idx})")
-
-          # Ищем ячейку с именем игрока
-          row.each_with_index do |cell, col_idx|
-            next if col_idx < 3 # Пропускаем первые 3 столбца (дата, время, место)
-            next unless cell # Пропускаем пустые ячейки
-
-            log(:debug, "Проверяем ячейку [#{row_idx}, #{col_idx}]: '#{cell}' (длина: #{cell.length})")
-
-            # Сравниваем с учетом возможных пробелов в конце
-            if cell.strip == clean_player_name
-              target_row_index = row_idx
-              target_col_index = col_idx
-              log(:info, "Нашли ячейку игрока #{player_name} [#{row_idx}, #{col_idx}]: '#{cell}'")
-              break
-            end
-          end
-
-          break if target_row_index
+        if target_date_data.empty?
+          log(:warn, "Не найдена строка с датой #{date_str}")
+          return false
         end
 
-        unless target_row_index && target_col_index
+        target_row = target_date_data[0]
+        log(:info, "Найдена строка с датой #{date_str}")
+
+        full_data = @sheets_formatter.get_spreadsheet_data
+        target_row_index = full_data.index(target_row)
+
+        unless target_row_index
+          log(:warn, "Не удалось определить индекс строки для даты #{date_str}")
+          return false
+        end
+
+        target_col_index = nil
+
+        target_row.each_with_index do |cell, col_idx|
+          next if col_idx < 3
+          next unless cell
+
+          log(:debug, "Проверяем ячейку [#{target_row_index}, #{col_idx}]: '#{cell}' (длина: #{cell.length})")
+
+          if cell.strip == clean_player_name
+            target_col_index = col_idx
+            log(:info, "Нашли ячейку игрока #{player_name} [#{target_row_index}, #{col_idx}]: '#{cell}'")
+            break
+          end
+        end
+
+        unless target_col_index
           log(:warn, "Не удалось найти ячейку для игрока '#{player_name}' на дату #{date_str}")
           return false
         end
 
-        # Преобразуем в A1 нотацию
         col_letter = (target_col_index + 'A'.ord).chr
         cell_a1 = "#{col_letter}#{target_row_index + 1}"
         log(:info, "Ячейка для обновления: #{cell_a1}")
 
-        # Применяем форматирование цвета текста вместо фона
         log(:info, "Применяем цвет текста #{color} к ячейке #{cell_a1}")
         @sheets_formatter.apply_format(sheet_name, cell_a1, :text_color, color)
         log(:info, "Обновлен статус посещения: #{player_name} на #{date_str} -> #{color}")
