@@ -20,6 +20,7 @@ module SheetFormatterBot
       @user_registry = user_registry || UserRegistry.new
       @notification_scheduler = notification_scheduler # Будет установлен позже если nil
       @user_states = {} # Хранит состояние каждого пользователя в процессе регистрации
+      @pinned_menu_cache = {} # chat_id => last_check_time
       log(:info, "TelegramBot инициализирован.")
     end
 
@@ -51,28 +52,8 @@ module SheetFormatterBot
           Telegram::Bot::Client.run(token) do |bot|
             @bot_instance = bot # Сохраняем экземпляр клиента API
 
-            begin
-              # Основные команды для быстрого доступа
-              commands = [
-                { command: "menu", description: "🏠 Главное меню" },
-                { command: "slots", description: "🗓️ Доступные слоты" },
-                { command: "status", description: "📋 Изменить статус" },
-                { command: "myname", description: "📝 Указать имя в таблице" }
-              ]
-
-              bot.api.set_my_commands(commands: commands)
-
-              # Кнопка меню в интерфейсе
-              bot.api.set_chat_menu_button(
-                menu_button: {
-                  type: "commands"
-                }
-              )
-
-              log(:info, "Команды бота настроены успешно")
-            rescue => e
-              log(:error, "Ошибка при настройке команд бота: #{e.message}")
-            end
+            # Полностью очищаем все команды
+            bot.api.set_my_commands(commands: [])
 
             # Инициализируем планировщик уведомлений
             @notification_scheduler = NotificationScheduler.new(bot: self, sheets_formatter: sheets_formatter)
@@ -137,6 +118,8 @@ module SheetFormatterBot
     end
 
     def handle_change_status_command(message, _captures)
+      return unless message.chat.type == "private"
+
       user_id = message.from.id
       user = @user_registry.find_by_telegram_id(user_id)
 
@@ -168,6 +151,8 @@ module SheetFormatterBot
     end
 
     def handle_myname_prompt(message, _captures)
+      return unless message.chat.type == "private"
+
       user_id = message.from.id
       user = @user_registry.find_by_telegram_id(user_id)
 
@@ -338,6 +323,8 @@ module SheetFormatterBot
     end
 
     def handle_start(message, _captures)
+      return unless message.chat.type == "private"
+
       # Получаем информацию о пользователе
       user_id = message.from.id
       first_name = message.from.first_name
@@ -371,15 +358,13 @@ module SheetFormatterBot
           Привет, #{first_name}! Я бот для уведомлений о теннисных матчах.
 
           Работаю с листом: *#{Config.default_sheet_name}* в таблице ID: `#{Config.spreadsheet_id}`
-
-          Ваше имя в таблице: *#{sheet_name}*
         WELCOME
 
-        # Используем новый метод для получения контента меню
-        menu_text, keyboard = get_main_menu_content(user)
-        final_message = welcome_message + "\n\n" + menu_text.split("\n")[2..-1].join("\n") # Убираем "Главное меню:" из начала
+        # Отправляем обычное приветствие
+        send_message(message.chat.id, welcome_message)
 
-        send_message(message.chat.id, final_message, reply_markup: keyboard)
+        # Отправляем и закрепляем меню
+        send_and_pin_menu(message.chat.id, user)
       else
         # Если имя еще не указано, запрашиваем его
         welcome_message = <<~WELCOME
@@ -397,6 +382,59 @@ module SheetFormatterBot
         # Переводим пользователя в режим ожидания имени
         @user_states[user_id] = { state: :awaiting_name }
       end
+    end
+
+    def send_and_pin_menu(chat_id, user)
+      menu_text, keyboard = get_main_menu_content(user)
+
+      # Добавляем информацию о закреплении
+      pinned_menu_text = <<~MENU
+        📌 *ЗАКРЕПЛЕННОЕ МЕНЮ*
+
+        #{menu_text}
+
+        💡 _Это сообщение закреплено для быстрого доступа к функциям бота_
+      MENU
+
+      begin
+        # Отправляем сообщение с меню
+        response = @bot_instance.api.send_message(
+          chat_id: chat_id,
+          text: pinned_menu_text,
+          parse_mode: "Markdown",
+          reply_markup: keyboard
+        )
+
+        # Получаем message_id отправленного сообщения
+        message_id = response.dig('result', 'message_id')
+
+        if message_id
+          # Закрепляем сообщение
+          @bot_instance.api.pin_chat_message(
+            chat_id: chat_id,
+            message_id: message_id,
+            disable_notification: true  # Не отправлять уведомление о закреплении
+          )
+
+          log(:info, "Меню успешно отправлено и закреплено в чате #{chat_id}")
+        end
+      rescue Telegram::Bot::Exceptions::ResponseError => e
+        log(:error, "Ошибка при закреплении меню: #{e.message}")
+        # Если не удалось закрепить, просто отправляем обычное меню
+        send_message(chat_id, menu_text, reply_markup: keyboard)
+      end
+    end
+
+    def update_pinned_menu(chat_id, user)
+      begin
+        # Открепляем старое сообщение (если есть)
+        @bot_instance.api.unpin_chat_message(chat_id: chat_id)
+      rescue => e
+        log(:debug, "Не удалось открепить старое сообщение: #{e.message}")
+      end
+
+      # Отправляем и закрепляем новое меню
+      send_and_pin_menu(chat_id, user)
     end
 
     def handle_test_notification(message, _captures)
@@ -626,12 +664,17 @@ module SheetFormatterBot
         Главное меню:
 
         Ваше имя в таблице: *#{sheet_name}*
-         📊 [Открыть таблицу](#{sheet_url})
 
         Выберите действие:
       MENU
 
       keyboard_buttons = [
+        [
+          Telegram::Bot::Types::InlineKeyboardButton.new(
+            text: "📊 Открыть таблицу",
+            url: sheet_url
+          )
+        ],
         [
           Telegram::Bot::Types::InlineKeyboardButton.new(
             text: "🗓️ Доступные слоты",
@@ -927,6 +970,11 @@ module SheetFormatterBot
       chat_id = callback_query.message.chat.id
       message_id = callback_query.message.message_id
       user = @user_registry.find_by_telegram_id(user_id)
+
+      # Проверяем закрепленное меню
+      if user
+        ensure_pinned_menu(chat_id, user)
+      end
 
       case action
       when "slots"
@@ -1495,9 +1543,14 @@ module SheetFormatterBot
       user_id = message.from.id
       text = message.text
 
-      # Не отвечаем в группах и супергруппах, если это не команда
-      if ['group', 'supergroup'].include?(message.chat.type)
-        return true unless text.start_with?('/')
+      return true unless message.chat.type == "private"
+
+      # Получаем пользователя
+      user = @user_registry.find_by_telegram_id(user_id)
+
+      # Проверяем закрепленное меню, если пользователь зарегистрирован
+      if user
+        ensure_pinned_menu(message.chat.id, user)
       end
 
       # Проверяем состояние пользователя
@@ -1592,6 +1645,12 @@ module SheetFormatterBot
       user_id = chat_id # В private chat, chat_id и user_id совпадают
       user = @user_registry.find_by_telegram_id(user_id)
 
+      # Проверяем и обеспечиваем наличие закрепленного меню
+      menu_was_pinned = ensure_pinned_menu(chat_id, user)
+
+      # Если меню было только что закреплено, не отправляем дублирующее сообщение
+      return if menu_was_pinned && text == "Главное меню:"
+
       # Добавляем текст к основному меню
       menu_text, keyboard = get_main_menu_content(user)
       final_text = text == "Главное меню:" ? menu_text : "#{text}\n\n#{menu_text}"
@@ -1620,6 +1679,9 @@ module SheetFormatterBot
 
       send_message(message.chat.id, success_message + menu_text, reply_markup: keyboard)
 
+      # Обновляем закрепленное меню
+      update_pinned_menu(message.chat.id, user)
+
       # Создаем резервную копию после изменения данных
       @user_registry.create_backup
     end
@@ -1644,6 +1706,9 @@ module SheetFormatterBot
       menu_text, keyboard = get_main_menu_content(user)
 
       send_message(message.chat.id, success_message + menu_text, reply_markup: keyboard)
+
+       # Отправляем и закрепляем меню
+      send_and_pin_menu(message.chat.id, user)
 
       # Создаем резервную копию после изменения данных
       @user_registry.create_backup
@@ -2072,6 +2137,46 @@ module SheetFormatterBot
     rescue StandardError => e
       log(:error, "Ошибка при обновлении ячейки #{cell_a1}: #{e.message}")
       false
+    end
+
+    def ensure_pinned_menu(chat_id, user)
+    # Проверяем не чаще раза в 100 минут для каждого чата
+    last_check = @pinned_menu_cache[chat_id]
+    return false if last_check && Time.now - last_check < 600 # 10 минут
+
+    @pinned_menu_cache[chat_id] = Time.now
+
+      begin
+        # Получаем информацию о закрепленном сообщении
+        chat = @bot_instance.api.get_chat(chat_id: chat_id)
+
+        # Если нет закрепленного сообщения
+        if chat["resul"]["pinned_message"].nil?
+          log(:info, "Закрепленное сообщение отсутствует в чате #{chat_id}, создаю новое")
+          send_and_pin_menu(chat_id, user)
+          return true
+        end
+
+        # Проверяем, является ли закрепленное сообщение нашим меню
+        pinned_message = chat["result"]["pinned_message"]
+        pinned_text = pinned_message["text"]
+
+        # Если закрепленное сообщение не содержит текст меню бота
+        if pinned_text.nil? || !pinned_text.include?("ЗАКРЕПЛЕННОЕ МЕНЮ") || !pinned_text.include?("Главное меню:")
+          log(:info, "Закрепленное сообщение в чате #{chat_id} не является меню бота, обновляю")
+          update_pinned_menu(chat_id, user)
+          return true
+        end
+
+        log(:debug, "Закрепленное меню актуально в чате #{chat_id}")
+        return false
+
+      rescue Telegram::Bot::Exceptions::ResponseError => e
+        log(:warn, "Не удалось проверить закрепленное сообщение в чате #{chat_id}: #{e.message}")
+        # В случае ошибки, попробуем закрепить меню
+        send_and_pin_menu(chat_id, user)
+        return true
+      end
     end
 
     def handle_show_slots(message, _captures)

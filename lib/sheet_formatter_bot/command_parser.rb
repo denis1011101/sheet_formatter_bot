@@ -13,14 +13,7 @@ module SheetFormatterBot
     def self.dispatch(message, context)
       text = message.text&.strip
       return if text.nil? || text.empty?
-
-      # Проверка типа чата
-      chat_type = message.chat.type
-      # Если сообщение из группового чата и не начинается с команды, игнорируем
-      if ['group', 'supergroup'].include?(chat_type) && !text.start_with?('/')
-        log(:info, "Игнорируем сообщение '#{text}' в групповом чате")
-        return false
-      end
+      return unless message.chat.type == "private"
 
       COMMANDS.each do |cmd|
         match = text.match(cmd.pattern)
