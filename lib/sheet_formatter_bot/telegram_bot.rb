@@ -2151,7 +2151,7 @@ module SheetFormatterBot
         chat = @bot_instance.api.get_chat(chat_id: chat_id)
 
         # Если нет закрепленного сообщения
-        if chat["resul"]["pinned_message"].nil?
+        if chat["result"]["pinned_message"].nil?
           log(:info, "Закрепленное сообщение отсутствует в чате #{chat_id}, создаю новое")
           send_and_pin_menu(chat_id, user)
           return true
