@@ -159,5 +159,8 @@ DEPENDENCIES
   sheet_formatter_bot!
   tzinfo (~> 2.0)
 
+RUBY VERSION
+   ruby 3.4.4p34
+
 BUNDLED WITH
    2.6.2

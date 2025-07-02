@@ -387,7 +387,6 @@ module SheetFormatterBot
     def send_and_pin_menu(chat_id, user)
       menu_text, keyboard = get_main_menu_content(user)
 
-      # Добавляем информацию о закреплении
       pinned_menu_text = <<~MENU
         📌 *ЗАКРЕПЛЕННОЕ МЕНЮ*
 
@@ -405,22 +404,33 @@ module SheetFormatterBot
           reply_markup: keyboard
         )
 
-        # Получаем message_id отправленного сообщения
-        message_id = response.dig('result', 'message_id')
+        message_id = response.dig("result", "message_id")
 
         if message_id
-          # Закрепляем сообщение
-          @bot_instance.api.pin_chat_message(
-            chat_id: chat_id,
-            message_id: message_id,
-            disable_notification: true  # Не отправлять уведомление о закреплении
-          )
+          # Через 20 секунд снимаем все закрепления и закрепляем только это сообщение
+          Thread.new do
+            sleep 20
+            begin
+              # Снимаем все закрепления (Telegram позволяет только одно закреплённое сообщение)
+              @bot_instance.api.unpin_all_chat_messages(chat_id: chat_id)
+            rescue StandardError => e
+              log(:debug, "Не удалось снять закреплённые сообщения: #{e.message}")
+            end
 
-          log(:info, "Меню успешно отправлено и закреплено в чате #{chat_id}")
+            begin
+              @bot_instance.api.pin_chat_message(
+                chat_id: chat_id,
+                message_id: message_id,
+                disable_notification: true
+              )
+              log(:info, "Меню закреплено в чате #{chat_id} через 20 секунд")
+            rescue StandardError => e
+              log(:error, "Ошибка при закреплении меню: #{e.message}")
+            end
+          end
         end
       rescue Telegram::Bot::Exceptions::ResponseError => e
-        log(:error, "Ошибка при закреплении меню: #{e.message}")
-        # Если не удалось закрепить, просто отправляем обычное меню
+        log(:error, "Ошибка при отправке меню: #{e.message}")
         send_message(chat_id, menu_text, reply_markup: keyboard)
       end
     end
