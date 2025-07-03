@@ -2,6 +2,8 @@
 
 require "telegram/bot"
 require "net/http"
+require "net/https"
+require "timeout"
 require_relative "utils/slot_utils"
 
 module SheetFormatterBot
